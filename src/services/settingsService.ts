@@ -13,6 +13,7 @@ export type PanelCategory = {
 export const SETTING_KEYS = {
   categoryId: 'tickets.category_id',
   transcriptChannelId: 'tickets.transcript_channel_id',
+  logChannelId: 'tickets.log_channel_id',
   staffRoleIds: 'tickets.staff_role_ids',
   panelCategories: 'tickets.panel_categories',
 } as const
@@ -44,6 +45,10 @@ export async function getCategoryId(): Promise<string | null> {
 
 export async function getTranscriptChannelId(): Promise<string | null> {
   return getSetting(SETTING_KEYS.transcriptChannelId)
+}
+
+export async function getLogChannelId(): Promise<string | null> {
+  return getSetting(SETTING_KEYS.logChannelId)
 }
 
 export async function getStaffRoleIds(): Promise<string[]> {

@@ -17,6 +17,7 @@ import {
 } from './settingsService'
 import { buildTicketWelcome } from './ticketRenderer'
 import { fetchAllMessages, renderTranscriptHtml } from './transcriptService'
+import { logTicketEvent } from './ticketLogger'
 import { log } from './logger'
 
 export type OpenResult =
@@ -128,6 +129,17 @@ export async function openTicket(opts: {
   })
   await channel.send(welcome as any)
 
+  void logTicketEvent({
+    guild,
+    kind: 'open',
+    ticketId: row.id,
+    fields: {
+      Opener: `<@${opener.id}>`,
+      Category: cat.label,
+      Channel: `<#${channel.id}>`,
+    },
+  })
+
   return { ok: true, channel, ticket: row }
 }
 
@@ -143,6 +155,18 @@ export async function claimTicket(opts: {
     .set({ claimerDiscordId: claimer.id })
     .where(eq(tickets.id, ticket.id))
     .returning()
+
+  void logTicketEvent({
+    guild: claimer.guild,
+    kind: 'claim',
+    ticketId: ticket.id,
+    fields: {
+      Claimer: `<@${claimer.id}>`,
+      Opener: `<@${ticket.openerDiscordId}>`,
+      Channel: `<#${ticket.channelId}>`,
+    },
+  })
+
   return { ok: true, updated }
 }
 
@@ -192,6 +216,18 @@ export async function closeTicket(opts: {
       log.error('Transcript generation failed', { ticketId: ticket.id, err: String(err) })
     }
   }
+
+  void logTicketEvent({
+    guild,
+    kind: 'close',
+    ticketId: ticket.id,
+    fields: {
+      Closer: `<@${closer.id}>`,
+      Opener: `<@${ticket.openerDiscordId}>`,
+      Category: ticket.categoryKey,
+      Duration: `<t:${Math.floor(ticket.openedAt.getTime() / 1000)}:R> opened`,
+    },
+  })
 
   await channel.delete(`Ticket #${ticket.id} closed by ${closer.user.tag}`).catch((err) => {
     log.warn('Channel delete failed', { ticketId: ticket.id, err: String(err) })

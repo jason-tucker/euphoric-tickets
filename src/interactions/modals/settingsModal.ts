@@ -21,6 +21,7 @@ export async function handleSettingsModalSubmit(interaction: ModalSubmitInteract
 
   const categoryId = interaction.fields.getTextInputValue('category_id').trim()
   const transcriptChannelId = interaction.fields.getTextInputValue('transcript_channel_id').trim()
+  const logChannelId = interaction.fields.getTextInputValue('log_channel_id').trim()
   const staffRoleIdsRaw = interaction.fields.getTextInputValue('staff_role_ids').trim()
   const panelCategoriesRaw = interaction.fields.getTextInputValue('panel_categories')
 
@@ -30,6 +31,10 @@ export async function handleSettingsModalSubmit(interaction: ModalSubmitInteract
 
   if (transcriptChannelId && !isSnowflake(transcriptChannelId)) {
     errors.push('• Transcript channel ID is not a valid Discord snowflake.')
+  }
+
+  if (logChannelId && !isSnowflake(logChannelId)) {
+    errors.push('• Log channel ID is not a valid Discord snowflake.')
   }
 
   const { ok: validStaff, bad: badStaff } = parseSnowflakeCsv(staffRoleIdsRaw)
@@ -45,9 +50,8 @@ export async function handleSettingsModalSubmit(interaction: ModalSubmitInteract
 
   await Promise.all([
     setSetting(SETTING_KEYS.categoryId, categoryId),
-    transcriptChannelId
-      ? setSetting(SETTING_KEYS.transcriptChannelId, transcriptChannelId)
-      : setSetting(SETTING_KEYS.transcriptChannelId, ''),
+    setSetting(SETTING_KEYS.transcriptChannelId, transcriptChannelId),
+    setSetting(SETTING_KEYS.logChannelId, logChannelId),
     setSetting(SETTING_KEYS.staffRoleIds, JSON.stringify(validStaff)),
     panelResult.ok ? setSetting(SETTING_KEYS.panelCategories, JSON.stringify(panelResult.value)) : Promise.resolve(),
   ])
@@ -56,6 +60,7 @@ export async function handleSettingsModalSubmit(interaction: ModalSubmitInteract
     '✓ Settings saved.',
     `**Tickets category:** <#${categoryId}>`,
     transcriptChannelId ? `**Transcript channel:** <#${transcriptChannelId}>` : '**Transcript channel:** _(none)_',
+    logChannelId ? `**Log channel:** <#${logChannelId}>` : '**Log channel:** _(none)_',
     validStaff.length
       ? `**Staff roles:** ${validStaff.map((id) => `<@&${id}>`).join(' ')}`
       : '**Staff roles:** _(none)_',

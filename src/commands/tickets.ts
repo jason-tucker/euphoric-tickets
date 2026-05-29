@@ -17,6 +17,7 @@ import { tickets } from '../db/schema/tickets'
 import { isSudoUser } from '../services/sudoService'
 import {
   getCategoryId,
+  getLogChannelId,
   getPanelCategories,
   getStaffRoleIds,
   getTranscriptChannelId,
@@ -52,9 +53,10 @@ async function openSettings(interaction: ChatInputCommandInteraction): Promise<v
 
   await interaction.deferReply({ ephemeral: true })
 
-  const [catId, transcriptId, staffIds, panelCats] = await Promise.all([
+  const [catId, transcriptId, logId, staffIds, panelCats] = await Promise.all([
     getCategoryId(),
     getTranscriptChannelId(),
+    getLogChannelId(),
     getStaffRoleIds(),
     getPanelCategories(),
   ])
@@ -63,6 +65,7 @@ async function openSettings(interaction: ChatInputCommandInteraction): Promise<v
     '## ⚙️ Ticket Settings',
     `**Tickets category:** ${catId ? `<#${catId}> (\`${catId}\`)` : '_(not set)_'}`,
     `**Transcript channel:** ${transcriptId ? `<#${transcriptId}>` : '_(not set — transcripts disabled)_'}`,
+    `**Log channel:** ${logId ? `<#${logId}>` : '_(not set — lifecycle events not logged)_'}`,
     `**Staff roles:** ${staffIds.length ? staffIds.map((id) => `<@&${id}>`).join(' ') : '_(none — only opener can see ticket)_'}`,
     `**Panel categories:** ${panelCats.length} configured`,
   ]
