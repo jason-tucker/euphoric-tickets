@@ -3,6 +3,18 @@ import 'dotenv/config'
 
 const SNOWFLAKE_RE = /^\d{17,20}$/
 
+// Coerce empty strings (common when copying .env.example) to undefined so
+// optional validators don't reject them. Without this, an unfilled
+// `UPTIME_KUMA_PUSH_URL=` line in .env crashes startup with "Invalid URL".
+for (const key of [
+  'UPTIME_KUMA_PUSH_URL',
+  'SUDO_ROLE_IDS',
+  'SUDO_USER_IDS',
+  'BOT_OWNER_ID',
+]) {
+  if (process.env[key] === '') delete process.env[key]
+}
+
 const csvSnowflakes = z
   .string()
   .optional()
