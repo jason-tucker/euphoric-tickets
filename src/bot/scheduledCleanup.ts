@@ -55,10 +55,7 @@ async function sweep(client: Client): Promise<void> {
       )
       .limit(50) // cap per sweep
 
-    if (candidates.length === 0) {
-      log.debug('Scheduled cleanup: nothing to do')
-      return
-    }
+    if (candidates.length === 0) return
     log.info(`Scheduled cleanup: ${candidates.length} channel(s) eligible for deletion`)
 
     for (const c of candidates) {
