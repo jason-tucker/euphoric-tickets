@@ -68,4 +68,4 @@ Subsequent deploys are automatic: push to `main` → GitHub Actions builds → p
 | `BOT_IMAGE` | No | Override the GHCR image tag |
 | `POSTGRES_PASSWORD` | Yes | Postgres password (compose only) |
 
-`euphoric-tickets v0.2.0 · cf992c9`
+`euphoric-tickets v0.2.1 · 7368229`
