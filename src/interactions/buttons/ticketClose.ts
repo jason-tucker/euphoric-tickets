@@ -5,6 +5,7 @@ import { tickets } from '../../db/schema/tickets'
 import { closeTicket } from '../../services/ticketService'
 import { buildCloseConfirm } from '../../services/ticketRenderer'
 import { getStaffRoleIds } from '../../services/settingsService'
+import { getDiscordIdForUserId } from '../../services/userResolver'
 import { isSudoUser } from '../../services/sudoService'
 
 export async function handleTicketClose(interaction: ButtonInteraction): Promise<void> {
@@ -24,9 +25,10 @@ export async function handleTicketClose(interaction: ButtonInteraction): Promise
   }
 
   const member = await interaction.guild.members.fetch(interaction.user.id)
-  const staffRoles = await getStaffRoleIds()
+  const staffRoles = await getStaffRoleIds(interaction.guild.id)
   const isStaff = staffRoles.some((id) => member.roles.cache.has(id))
-  const isOpener = ticket.openerDiscordId === member.id
+  const openerDiscordId = await getDiscordIdForUserId(ticket.openerUserId)
+  const isOpener = openerDiscordId === member.id
   if (!isStaff && !isOpener && !isSudoUser(member)) {
     await interaction.reply({ content: 'Only the opener or staff can close this ticket.', ephemeral: true })
     return

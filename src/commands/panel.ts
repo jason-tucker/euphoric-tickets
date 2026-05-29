@@ -61,7 +61,7 @@ async function postPanel(interaction: ChatInputCommandInteraction): Promise<void
 
   await interaction.deferReply({ ephemeral: true })
 
-  const categories = await getPanelCategories()
+  const categories = await getPanelCategories(interaction.guild!.id)
   const payload = buildPanelMessage(categories)
 
   const sent = await channel.send(payload as any)
@@ -108,7 +108,7 @@ async function refreshPanel(interaction: ChatInputCommandInteraction): Promise<v
     return
   }
 
-  const categories = await getPanelCategories()
+  const categories = await getPanelCategories(interaction.guild!.id)
   const payload = buildPanelMessage(categories)
   await message.edit(payload as any)
   await interaction.editReply(`✓ Refreshed panel \`${panelRow.messageId}\` in <#${panelRow.channelId}>.`)

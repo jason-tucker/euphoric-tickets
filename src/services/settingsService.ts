@@ -1,7 +1,8 @@
-import { eq, sql } from 'drizzle-orm'
+import { and, asc, eq } from 'drizzle-orm'
 import { db } from '../db/client'
-import { ticketSettings } from '../db/schema/ticketSettings'
-import { log } from './logger'
+import { businesses } from '../db/schema/businesses'
+import { ticketCategories } from '../db/schema/ticketCategories'
+import { getBusinessByGuildId, invalidateBusinessCache } from './businessResolver'
 
 export type PanelCategory = {
   key: string
@@ -10,73 +11,133 @@ export type PanelCategory = {
   description?: string
 }
 
-export const SETTING_KEYS = {
-  categoryId: 'tickets.category_id',
-  transcriptChannelId: 'tickets.transcript_channel_id',
-  logChannelId: 'tickets.log_channel_id',
-  staffRoleIds: 'tickets.staff_role_ids',
-  panelCategories: 'tickets.panel_categories',
-} as const
-
 const SNOWFLAKE_RE = /^\d{17,20}$/
 
 export const DEFAULT_PANEL_CATEGORIES: PanelCategory[] = [
   { key: 'support', label: 'Open a ticket', emoji: '🎫', description: 'General support' },
 ]
 
-export async function getSetting(key: string): Promise<string | null> {
-  const rows = await db.select().from(ticketSettings).where(eq(ticketSettings.key, key)).limit(1)
-  return rows[0]?.value ?? null
+// All reads below scope by guild because that's how Discord interactions
+// arrive. The bot used to be single-tenant and read raw key/value rows;
+// now everything routes through `businesses` keyed on the Discord guild.
+
+export async function getCategoryId(guildId: string): Promise<string | null> {
+  const biz = await getBusinessByGuildId(guildId)
+  return biz?.discordFallbackCategoryId ?? null
 }
 
-export async function setSetting(key: string, value: string): Promise<void> {
-  await db
-    .insert(ticketSettings)
-    .values({ key, value })
-    .onConflictDoUpdate({
-      target: ticketSettings.key,
-      set: { value, updatedAt: sql`now()` },
+// Not in the web schema. Left as no-op so callers don't need conditional
+// imports; the close path still DMs the opener regardless.
+export async function getTranscriptChannelId(_guildId: string): Promise<string | null> {
+  // TODO(web schema): add a transcript_channel_id column to businesses if
+  // we want the bot to post HTML transcripts to a channel again.
+  return null
+}
+
+// Not in the web schema either — log channel was bot-only. Same TODO.
+export async function getLogChannelId(_guildId: string): Promise<string | null> {
+  return null
+}
+
+export async function getStaffRoleIds(guildId: string): Promise<string[]> {
+  const biz = await getBusinessByGuildId(guildId)
+  if (!biz?.adminRoleIds) return []
+  return biz.adminRoleIds
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean)
+}
+
+export async function getPanelCategories(guildId: string): Promise<PanelCategory[]> {
+  const biz = await getBusinessByGuildId(guildId)
+  if (!biz) return DEFAULT_PANEL_CATEGORIES
+  const rows = await db
+    .select({
+      key: ticketCategories.key,
+      label: ticketCategories.label,
+      emoji: ticketCategories.emoji,
+      description: ticketCategories.description,
     })
+    .from(ticketCategories)
+    .where(eq(ticketCategories.businessId, biz.id))
+    .orderBy(asc(ticketCategories.sortOrder))
+
+  if (rows.length === 0) return DEFAULT_PANEL_CATEGORIES
+  // Discord ActionRow caps at 5 buttons.
+  return rows.slice(0, 5).map((r) => ({
+    key: r.key,
+    label: r.label,
+    emoji: r.emoji ?? undefined,
+    description: r.description ?? undefined,
+  }))
 }
 
-export async function getCategoryId(): Promise<string | null> {
-  return getSetting(SETTING_KEYS.categoryId)
+// Settings writes — used by /tickets settings modal. The category list
+// is no longer JSON-on-a-key; admins manage it via the web UI. The modal
+// here only writes the few business-level columns the bot still owns.
+export async function updateBusinessSettings(
+  guildId: string,
+  patch: {
+    discordFallbackCategoryId?: string | null
+    adminRoleIds?: string
+  },
+): Promise<void> {
+  await db
+    .update(businesses)
+    .set({ ...patch })
+    .where(eq(businesses.discordGuildId, guildId))
+  invalidateBusinessCache(guildId)
 }
 
-export async function getTranscriptChannelId(): Promise<string | null> {
-  return getSetting(SETTING_KEYS.transcriptChannelId)
-}
-
-export async function getLogChannelId(): Promise<string | null> {
-  return getSetting(SETTING_KEYS.logChannelId)
-}
-
-export async function getStaffRoleIds(): Promise<string[]> {
-  const raw = await getSetting(SETTING_KEYS.staffRoleIds)
-  if (!raw) return []
-  try {
-    const parsed = JSON.parse(raw)
-    if (Array.isArray(parsed)) return parsed.filter((s): s is string => typeof s === 'string')
-  } catch (err) {
-    log.warn('staff_role_ids JSON parse failed', { err: String(err) })
-  }
-  return []
-}
-
-export async function getPanelCategories(): Promise<PanelCategory[]> {
-  const raw = await getSetting(SETTING_KEYS.panelCategories)
-  if (!raw) return DEFAULT_PANEL_CATEGORIES
-  try {
-    const parsed = JSON.parse(raw)
-    if (Array.isArray(parsed) && parsed.length > 0) {
-      return parsed
-        .filter((c): c is PanelCategory => typeof c?.key === 'string' && typeof c?.label === 'string')
-        .slice(0, 5) // Discord limit: 5 buttons per ActionRow
+// Replace the bot's ticket categories for a guild with the given list.
+// Wipes and re-inserts in a single transaction — the panel JSON in the
+// settings modal is treated as the source of truth on submit.
+export async function replaceTicketCategories(
+  guildId: string,
+  cats: PanelCategory[],
+): Promise<{ ok: true } | { ok: false; reason: string }> {
+  const biz = await getBusinessByGuildId(guildId)
+  if (!biz) {
+    return {
+      ok: false,
+      reason: 'This server is not configured as a business — create one at https://tickets.euphoric.fm/admin.',
     }
-  } catch (err) {
-    log.warn('panel_categories JSON parse failed', { err: String(err) })
   }
-  return DEFAULT_PANEL_CATEGORIES
+  await db.transaction(async (tx) => {
+    await tx.delete(ticketCategories).where(eq(ticketCategories.businessId, biz.id))
+    if (cats.length === 0) return
+    await tx.insert(ticketCategories).values(
+      cats.map((c, i) => ({
+        businessId: biz.id,
+        key: c.key,
+        label: c.label,
+        emoji: c.emoji ?? null,
+        description: c.description ?? null,
+        sortOrder: String(i),
+      })),
+    )
+  })
+  invalidateBusinessCache(guildId)
+  return { ok: true }
+}
+
+// Unused on the read path now but kept for /tickets settings:
+export async function findCategoryForGuild(
+  guildId: string,
+  key: string,
+): Promise<{ id: string; discordParentCategoryId: string | null; label: string } | null> {
+  const biz = await getBusinessByGuildId(guildId)
+  if (!biz) return null
+  const rows = await db
+    .select({
+      id: ticketCategories.id,
+      discordParentCategoryId: ticketCategories.discordParentCategoryId,
+      label: ticketCategories.label,
+    })
+    .from(ticketCategories)
+    .where(and(eq(ticketCategories.businessId, biz.id), eq(ticketCategories.key, key)))
+    .limit(1)
+  return rows[0] ?? null
 }
 
 export function parseSnowflakeCsv(input: string): { ok: string[]; bad: string[] } {
@@ -93,7 +154,9 @@ export function isSnowflake(s: string): boolean {
   return SNOWFLAKE_RE.test(s)
 }
 
-export function validatePanelCategoriesJson(input: string): { ok: true; value: PanelCategory[] } | { ok: false; error: string } {
+export function validatePanelCategoriesJson(
+  input: string,
+): { ok: true; value: PanelCategory[] } | { ok: false; error: string } {
   let parsed: unknown
   try {
     parsed = JSON.parse(input)

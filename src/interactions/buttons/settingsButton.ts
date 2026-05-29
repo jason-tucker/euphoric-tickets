@@ -6,13 +6,7 @@ import {
   type ButtonInteraction,
 } from 'discord.js'
 import { isSudoUser } from '../../services/sudoService'
-import {
-  getCategoryId,
-  getLogChannelId,
-  getPanelCategories,
-  getStaffRoleIds,
-  getTranscriptChannelId,
-} from '../../services/settingsService'
+import { getCategoryId, getPanelCategories, getStaffRoleIds } from '../../services/settingsService'
 
 export async function handleSettingsButton(interaction: ButtonInteraction): Promise<void> {
   if (!interaction.inGuild() || !interaction.guild) return
@@ -29,12 +23,12 @@ export async function handleSettingsButton(interaction: ButtonInteraction): Prom
     return
   }
 
-  const [catId, transcriptId, logId, staffIds, panelCats] = await Promise.all([
-    getCategoryId(),
-    getTranscriptChannelId(),
-    getLogChannelId(),
-    getStaffRoleIds(),
-    getPanelCategories(),
+  // Source of truth now lives on `businesses` / `ticket_categories`.
+  // Transcript + log channel rows were dropped — see settingsService TODO.
+  const [catId, staffIds, panelCats] = await Promise.all([
+    getCategoryId(interaction.guild.id),
+    getStaffRoleIds(interaction.guild.id),
+    getPanelCategories(interaction.guild.id),
   ])
 
   const modal = new ModalBuilder()
@@ -43,25 +37,11 @@ export async function handleSettingsButton(interaction: ButtonInteraction): Prom
 
   const categoryInput = new TextInputBuilder()
     .setCustomId('category_id')
-    .setLabel('Tickets category ID')
+    .setLabel('Fallback tickets category ID')
     .setStyle(TextInputStyle.Short)
     .setRequired(true)
     .setPlaceholder('Snowflake of a Discord category')
     .setValue(catId ?? '')
-
-  const transcriptInput = new TextInputBuilder()
-    .setCustomId('transcript_channel_id')
-    .setLabel('Transcript channel ID (blank to disable)')
-    .setStyle(TextInputStyle.Short)
-    .setRequired(false)
-    .setValue(transcriptId ?? '')
-
-  const logInput = new TextInputBuilder()
-    .setCustomId('log_channel_id')
-    .setLabel('Log channel ID (blank to disable)')
-    .setStyle(TextInputStyle.Short)
-    .setRequired(false)
-    .setValue(logId ?? '')
 
   const staffInput = new TextInputBuilder()
     .setCustomId('staff_role_ids')
@@ -80,8 +60,6 @@ export async function handleSettingsButton(interaction: ButtonInteraction): Prom
 
   modal.addComponents(
     new ActionRowBuilder<TextInputBuilder>().addComponents(categoryInput),
-    new ActionRowBuilder<TextInputBuilder>().addComponents(transcriptInput),
-    new ActionRowBuilder<TextInputBuilder>().addComponents(logInput),
     new ActionRowBuilder<TextInputBuilder>().addComponents(staffInput),
     new ActionRowBuilder<TextInputBuilder>().addComponents(panelInput),
   )

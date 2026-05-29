@@ -6,15 +6,12 @@ import {
   type GuildMember,
   type TextChannel,
 } from 'discord.js'
-import { eq } from 'drizzle-orm'
+import { and, desc, eq } from 'drizzle-orm'
 import { db } from '../db/client'
 import { tickets, type Ticket } from '../db/schema/tickets'
-import {
-  getCategoryId,
-  getPanelCategories,
-  getStaffRoleIds,
-  getTranscriptChannelId,
-} from './settingsService'
+import { ticketCategories } from '../db/schema/ticketCategories'
+import { getBusinessByGuildId } from './businessResolver'
+import { getOrCreateUserByDiscordId, getDiscordIdForUserId } from './userResolver'
 import { buildTicketWelcome } from './ticketRenderer'
 import { fetchAllMessages, renderTranscriptHtml } from './transcriptService'
 import { logTicketEvent } from './ticketLogger'
@@ -24,6 +21,13 @@ export type OpenResult =
   | { ok: true; channel: TextChannel; ticket: Ticket }
   | { ok: false; reason: string }
 
+const NOT_CONFIGURED =
+  'This server is not configured as a business — ask an admin to create one at https://tickets.euphoric.fm/admin.'
+
+function truncate(s: string, n: number): string {
+  return s.length > n ? s.slice(0, n - 1) + '…' : s
+}
+
 export async function openTicket(opts: {
   guild: Guild
   opener: GuildMember
@@ -31,33 +35,65 @@ export async function openTicket(opts: {
 }): Promise<OpenResult> {
   const { guild, opener, categoryKey } = opts
 
-  const ticketsCategoryId = await getCategoryId()
-  if (!ticketsCategoryId) {
-    return { ok: false, reason: 'Tickets category is not configured. Ask an admin to run `/tickets settings`.' }
-  }
-  const parentCat = await guild.channels.fetch(ticketsCategoryId).catch(() => null)
-  if (!parentCat || parentCat.type !== ChannelType.GuildCategory) {
-    return { ok: false, reason: 'Configured tickets category no longer exists. Ask an admin to fix `/tickets settings`.' }
-  }
+  const business = await getBusinessByGuildId(guild.id)
+  if (!business) return { ok: false, reason: NOT_CONFIGURED }
 
-  const panelCats = await getPanelCategories()
-  const cat = panelCats.find((c) => c.key === categoryKey)
+  const catRows = await db
+    .select()
+    .from(ticketCategories)
+    .where(and(eq(ticketCategories.businessId, business.id), eq(ticketCategories.key, categoryKey)))
+    .limit(1)
+  const cat = catRows[0]
   if (!cat) return { ok: false, reason: 'Unknown ticket category. The panel may be out of date.' }
 
+  const parentCategoryId = cat.discordParentCategoryId ?? business.discordFallbackCategoryId
+  if (!parentCategoryId) {
+    return {
+      ok: false,
+      reason:
+        'No Discord category configured for ticket channels. Ask an admin to set one in the web settings or per-category override.',
+    }
+  }
+
+  const parentCat = await guild.channels.fetch(parentCategoryId).catch(() => null)
+  if (!parentCat || parentCat.type !== ChannelType.GuildCategory) {
+    return {
+      ok: false,
+      reason: 'Configured Discord category no longer exists. Ask an admin to fix it on the web.',
+    }
+  }
+
+  const staffRoleIds = business.adminRoleIds
+    ? business.adminRoleIds.split(',').map((s) => s.trim()).filter(Boolean)
+    : []
+
+  const openerUserId = await getOrCreateUserByDiscordId(opener.id, {
+    name: opener.user.globalName ?? opener.user.username,
+    image: opener.user.displayAvatarURL(),
+  })
+
+  // Dedupe by (business, opener, category, status='open').
   const existing = await db
     .select()
     .from(tickets)
-    .where(eq(tickets.openerDiscordId, opener.id))
-  const stillOpen = existing.find((t) => t.status === 'open' && t.categoryKey === categoryKey)
-  if (stillOpen) {
-    const ch = await guild.channels.fetch(stillOpen.channelId).catch(() => null)
+    .where(and(eq(tickets.businessId, business.id), eq(tickets.openerUserId, openerUserId)))
+  const stillOpen = existing.find(
+    (t) => t.status !== 'closed' && t.categoryId === cat.id,
+  )
+  if (stillOpen && stillOpen.discordChannelId) {
+    const ch = await guild.channels.fetch(stillOpen.discordChannelId).catch(() => null)
     if (ch) {
-      return { ok: false, reason: `You already have an open ticket in this category: <#${stillOpen.channelId}>` }
+      return {
+        ok: false,
+        reason: `You already have an open ticket in this category: <#${stillOpen.discordChannelId}>`,
+      }
     }
-    await db.update(tickets).set({ status: 'closed', closedAt: new Date() }).where(eq(tickets.id, stillOpen.id))
+    // Channel was deleted out from under us — auto-close the row.
+    await db
+      .update(tickets)
+      .set({ status: 'closed', closedAt: new Date(), lastActivityAt: new Date() })
+      .where(eq(tickets.id, stillOpen.id))
   }
-
-  const staffRoleIds = await getStaffRoleIds()
 
   const safeName = opener.user.username.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 20) || 'user'
   const baseName = `ticket-${safeName}`
@@ -98,13 +134,17 @@ export async function openTicket(opts: {
     topic: `Ticket for ${opener.user.tag} · category: ${cat.label}`,
   })
 
+  const subject = truncate(`${categoryKey} from ${opener.user.username}`, 120)
   const [row] = await db
     .insert(tickets)
     .values({
-      guildId: guild.id,
-      channelId: channel.id,
-      openerDiscordId: opener.id,
-      categoryKey: cat.key,
+      businessId: business.id,
+      openerUserId,
+      categoryId: cat.id,
+      subject,
+      status: 'open',
+      discordChannelId: channel.id,
+      lastActivityAt: new Date(),
     })
     .returning()
 
@@ -118,8 +158,6 @@ export async function openTicket(opts: {
     claimerId: null,
   })
 
-  // Ping opener + staff roles once on creation, then suppress mention resolution
-  // on the welcome card itself.
   const pingContent = staffRoleIds.length
     ? `<@${opener.id}> ${staffRoleIds.map((id) => `<@&${id}>`).join(' ')}`
     : `<@${opener.id}>`
@@ -148,13 +186,29 @@ export async function claimTicket(opts: {
   claimer: GuildMember
 }): Promise<{ ok: true; updated: Ticket } | { ok: false; reason: string }> {
   const { ticket, claimer } = opts
-  if (ticket.status !== 'open') return { ok: false, reason: 'This ticket is already closed.' }
-  if (ticket.claimerDiscordId) return { ok: false, reason: `Already claimed by <@${ticket.claimerDiscordId}>.` }
+  if (ticket.status === 'closed') return { ok: false, reason: 'This ticket is already closed.' }
+  if (ticket.assigneeUserId) {
+    const assigneeDiscordId = await getDiscordIdForUserId(ticket.assigneeUserId)
+    return {
+      ok: false,
+      reason: assigneeDiscordId
+        ? `Already claimed by <@${assigneeDiscordId}>.`
+        : 'Already claimed.',
+    }
+  }
+
+  const claimerUserId = await getOrCreateUserByDiscordId(claimer.id, {
+    name: claimer.user.globalName ?? claimer.user.username,
+    image: claimer.user.displayAvatarURL(),
+  })
+
   const [updated] = await db
     .update(tickets)
-    .set({ claimerDiscordId: claimer.id })
+    .set({ status: 'claimed', assigneeUserId: claimerUserId, lastActivityAt: new Date() })
     .where(eq(tickets.id, ticket.id))
     .returning()
+
+  const openerDiscordId = await getDiscordIdForUserId(ticket.openerUserId)
 
   void logTicketEvent({
     guild: claimer.guild,
@@ -162,8 +216,8 @@ export async function claimTicket(opts: {
     ticketId: ticket.id,
     fields: {
       Claimer: `<@${claimer.id}>`,
-      Opener: `<@${ticket.openerDiscordId}>`,
-      Channel: `<#${ticket.channelId}>`,
+      Opener: openerDiscordId ? `<@${openerDiscordId}>` : '_(unknown)_',
+      Channel: ticket.discordChannelId ? `<#${ticket.discordChannelId}>` : '_(no channel)_',
     },
   })
 
@@ -180,78 +234,100 @@ export async function closeTicket(opts: {
 
   if (ticket.status === 'closed') return { ok: false, reason: 'This ticket is already closed.' }
 
+  const closerUserId = await getOrCreateUserByDiscordId(closer.id, {
+    name: closer.user.globalName ?? closer.user.username,
+    image: closer.user.displayAvatarURL(),
+  })
+
   await db
     .update(tickets)
-    .set({ status: 'closed', closedAt: new Date(), closedByDiscordId: closer.id })
+    .set({
+      status: 'closed',
+      closedAt: new Date(),
+      closedByUserId: closerUserId,
+      lastActivityAt: new Date(),
+    })
     .where(eq(tickets.id, ticket.id))
 
-  const transcriptChannelId = await getTranscriptChannelId()
-  // Render the transcript once if either destination is configured —
-  // re-fetching the channel history per destination would be wasteful and
-  // the second fetch would see the channel after the first has touched it.
-  const wantOpenerDm = true
-  if (transcriptChannelId || wantOpenerDm) {
-    try {
-      const messages = await fetchAllMessages(channel)
-      const opener = await guild.members.fetch(ticket.openerDiscordId).catch(() => null)
-      const html = renderTranscriptHtml({
-        guildName: guild.name,
-        channelName: channel.name,
-        ticketId: ticket.id,
-        openerTag: opener?.user.tag ?? ticket.openerDiscordId,
-        closedByTag: closer.user.tag,
-        messages,
+  // Transcript HTML — used for the opener DM. (The transcript channel
+  // setting no longer exists on the web schema; we drop posting to a
+  // dedicated channel for now. The DM-to-opener path is preserved.)
+  try {
+    const messages = await fetchAllMessages(channel)
+    const openerDiscordId = await getDiscordIdForUserId(ticket.openerUserId)
+    const opener = openerDiscordId
+      ? await guild.members.fetch(openerDiscordId).catch(() => null)
+      : null
+
+    const categoryLabel = await loadCategoryLabel(ticket.categoryId)
+    const html = renderTranscriptHtml({
+      guildName: guild.name,
+      channelName: channel.name,
+      ticketId: ticket.id,
+      openerTag: opener?.user.tag ?? openerDiscordId ?? 'unknown',
+      closedByTag: closer.user.tag,
+      messages,
+    })
+    const buf = Buffer.from(html, 'utf8')
+
+    if (opener) {
+      const dmFile = new AttachmentBuilder(buf, {
+        name: `ticket-${ticket.id}-${channel.name}.html`,
       })
-      const buf = Buffer.from(html, 'utf8')
-
-      if (transcriptChannelId) {
-        const file = new AttachmentBuilder(buf, { name: `ticket-${ticket.id}-${channel.name}.html` })
-        const transcriptCh = await guild.channels.fetch(transcriptChannelId).catch(() => null)
-        if (transcriptCh && transcriptCh.isTextBased() && !transcriptCh.isDMBased()) {
-          await transcriptCh.send({
-            content:
-              `**Ticket #${ticket.id}** closed by <@${closer.id}>\n` +
-              `Opened by <@${ticket.openerDiscordId}> · Category: \`${ticket.categoryKey}\` · ${messages.length} messages`,
-            files: [file],
+      await opener
+        .send({
+          content:
+            `Your ticket **#${ticket.id}** in **${guild.name}** was closed by ${closer.user.tag}. ` +
+            `A full transcript is attached.`,
+          files: [dmFile],
+        })
+        .catch((err) => {
+          log.info('Opener DM failed (likely DMs closed)', {
+            ticketId: ticket.id,
+            err: String(err),
           })
-        } else {
-          log.warn('Transcript channel not text-based', { transcriptChannelId })
-        }
-      }
-
-      if (opener) {
-        const dmFile = new AttachmentBuilder(buf, { name: `ticket-${ticket.id}-${channel.name}.html` })
-        await opener
-          .send({
-            content:
-              `Your ticket **#${ticket.id}** in **${guild.name}** was closed by ${closer.user.tag}. ` +
-              `A full transcript is attached.`,
-            files: [dmFile],
-          })
-          .catch((err) => {
-            log.info('Opener DM failed (likely DMs closed)', { ticketId: ticket.id, err: String(err) })
-          })
-      }
-    } catch (err) {
-      log.error('Transcript generation failed', { ticketId: ticket.id, err: String(err) })
+        })
     }
-  }
 
-  void logTicketEvent({
-    guild,
-    kind: 'close',
-    ticketId: ticket.id,
-    fields: {
-      Closer: `<@${closer.id}>`,
-      Opener: `<@${ticket.openerDiscordId}>`,
-      Category: ticket.categoryKey,
-      Duration: `<t:${Math.floor(ticket.openedAt.getTime() / 1000)}:R> opened`,
-    },
-  })
+    void logTicketEvent({
+      guild,
+      kind: 'close',
+      ticketId: ticket.id,
+      fields: {
+        Closer: `<@${closer.id}>`,
+        Opener: openerDiscordId ? `<@${openerDiscordId}>` : '_(unknown)_',
+        Category: categoryLabel ?? '_(none)_',
+        Duration: `<t:${Math.floor(ticket.openedAt.getTime() / 1000)}:R> opened`,
+      },
+    })
+  } catch (err) {
+    log.error('Transcript generation failed', { ticketId: ticket.id, err: String(err) })
+  }
 
   await channel.delete(`Ticket #${ticket.id} closed by ${closer.user.tag}`).catch((err) => {
     log.warn('Channel delete failed', { ticketId: ticket.id, err: String(err) })
   })
 
   return { ok: true }
+}
+
+async function loadCategoryLabel(categoryId: string | null): Promise<string | null> {
+  if (!categoryId) return null
+  const rows = await db
+    .select({ label: ticketCategories.label })
+    .from(ticketCategories)
+    .where(eq(ticketCategories.id, categoryId))
+    .limit(1)
+  return rows[0]?.label ?? null
+}
+
+// Helper for /tickets list and similar lookups that previously sorted by
+// openedAt — pulled out so the command files don't need to repeat the
+// ordering ceremony.
+export async function listOpenTicketsForBusiness(businessId: string) {
+  return db
+    .select()
+    .from(tickets)
+    .where(and(eq(tickets.businessId, businessId)))
+    .orderBy(desc(tickets.openedAt))
 }

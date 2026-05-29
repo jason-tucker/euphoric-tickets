@@ -1,10 +1,9 @@
 #!/bin/sh
 set -e
 
-echo "▶ Applying database schema (drizzle-kit push)..."
-node_modules/.bin/drizzle-kit push \
-  --config=drizzle.docker.config.cjs \
-  --force
+# The web (euphoric-tickets-web) owns the schema and runs drizzle-kit push
+# on its own container start. The bot used to push too — removed so we
+# don't have a race over the same tables. Just connect and run.
 
 echo "▶ Starting Euphoric Tickets..."
 exec node dist/index.js

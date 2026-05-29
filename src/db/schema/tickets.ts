@@ -1,16 +1,60 @@
-import { pgTable, text, timestamp, serial } from 'drizzle-orm/pg-core'
+import { index, integer, pgTable, serial, text, timestamp, uuid } from 'drizzle-orm/pg-core'
+import { businesses } from './businesses'
+import { ticketCategories } from './ticketCategories'
+import { users } from './users'
 
-export const tickets = pgTable('tickets', {
-  id: serial('id').primaryKey(),
-  guildId: text('guild_id').notNull(),
-  channelId: text('channel_id').notNull().unique(),
-  openerDiscordId: text('opener_discord_id').notNull(),
-  categoryKey: text('category_key').notNull(),
-  status: text('status', { enum: ['open', 'closed'] }).notNull().default('open'),
-  claimerDiscordId: text('claimer_discord_id'),
-  openedAt: timestamp('opened_at', { withTimezone: true }).notNull().defaultNow(),
-  closedAt: timestamp('closed_at', { withTimezone: true }),
-  closedByDiscordId: text('closed_by_discord_id'),
-})
+// Mirrored from euphoric-tickets-web. Discord IDs are stored on `users`
+// (not here) — `openerUserId` / `assigneeUserId` / `closedByUserId` are
+// FK uuids and need a join through `users` to recover the snowflake.
+export const ticketStatuses = ['open', 'claimed', 'waiting', 'closed'] as const
+export type TicketStatus = (typeof ticketStatuses)[number]
+
+export const ticketKinds = ['normal', 'project'] as const
+export type TicketKind = (typeof ticketKinds)[number]
+
+export const tickets = pgTable(
+  'tickets',
+  {
+    id: serial('id').primaryKey(),
+    // The HOST business operating this ticket. Always set.
+    businessId: uuid('business_id')
+      .notNull()
+      .references(() => businesses.id, { onDelete: 'cascade' }),
+    // The CLIENT business this ticket is for, when opened on behalf of one.
+    // Null for tickets opened directly by host-side users.
+    clientBusinessId: uuid('client_business_id').references(() => businesses.id, {
+      onDelete: 'set null',
+    }),
+    openerUserId: uuid('opener_user_id')
+      .notNull()
+      .references(() => users.id),
+    categoryId: uuid('category_id').references(() => ticketCategories.id),
+    subject: text('subject').notNull(),
+    status: text('status', { enum: ticketStatuses }).notNull().default('open'),
+    kind: text('kind', { enum: ticketKinds }).notNull().default('normal'),
+    parentTicketId: integer('parent_ticket_id'),
+    assigneeUserId: uuid('assignee_user_id').references(() => users.id),
+
+    // Per-ticket Discord channel — the bot creates this on open and the
+    // web deep-links into it.
+    discordChannelId: text('discord_channel_id'),
+
+    discordWebhookId: text('discord_webhook_id'),
+    discordWebhookUrl: text('discord_webhook_url'),
+    discordInternalThreadId: text('discord_internal_thread_id'),
+
+    priority: integer('priority').notNull().default(2), // 1=urgent .. 4=low
+    openedAt: timestamp('opened_at', { withTimezone: true }).notNull().defaultNow(),
+    closedAt: timestamp('closed_at', { withTimezone: true }),
+    closedByUserId: uuid('closed_by_user_id').references(() => users.id),
+    lastActivityAt: timestamp('last_activity_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    byBusinessStatus: index('tickets_business_status_idx').on(t.businessId, t.status),
+    byOpener: index('tickets_opener_idx').on(t.openerUserId),
+    byAssignee: index('tickets_assignee_idx').on(t.assigneeUserId),
+  }),
+)
 
 export type Ticket = typeof tickets.$inferSelect
+export type NewTicket = typeof tickets.$inferInsert

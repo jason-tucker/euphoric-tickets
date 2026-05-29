@@ -12,19 +12,20 @@ import {
   type TextChannel,
 } from 'discord.js'
 import { logTicketEvent } from '../services/ticketLogger'
-import { and, asc, eq } from 'drizzle-orm'
+import { and, asc, eq, ne } from 'drizzle-orm'
 import { db } from '../db/client'
 import { tickets } from '../db/schema/tickets'
+import { ticketCategories } from '../db/schema/ticketCategories'
 import { isSudoUser } from '../services/sudoService'
 import {
   getCategoryId,
-  getLogChannelId,
   getPanelCategories,
   getStaffRoleIds,
-  getTranscriptChannelId,
 } from '../services/settingsService'
 import { claimTicket, closeTicket } from '../services/ticketService'
 import { buildCloseConfirm } from '../services/ticketRenderer'
+import { getBusinessByGuildId } from '../services/businessResolver'
+import { getDiscordIdForUserId } from '../services/userResolver'
 
 export const data = new SlashCommandBuilder()
   .setName('tickets')
@@ -83,21 +84,19 @@ async function openSettings(interaction: ChatInputCommandInteraction): Promise<v
 
   await interaction.deferReply({ ephemeral: true })
 
-  const [catId, transcriptId, logId, staffIds, panelCats] = await Promise.all([
-    getCategoryId(),
-    getTranscriptChannelId(),
-    getLogChannelId(),
-    getStaffRoleIds(),
-    getPanelCategories(),
+  const [catId, staffIds, panelCats] = await Promise.all([
+    getCategoryId(interaction.guild!.id),
+    getStaffRoleIds(interaction.guild!.id),
+    getPanelCategories(interaction.guild!.id),
   ])
 
   const lines = [
     '## ⚙️ Ticket Settings',
-    `**Tickets category:** ${catId ? `<#${catId}> (\`${catId}\`)` : '_(not set)_'}`,
-    `**Transcript channel:** ${transcriptId ? `<#${transcriptId}>` : '_(not set — transcripts disabled)_'}`,
-    `**Log channel:** ${logId ? `<#${logId}>` : '_(not set — lifecycle events not logged)_'}`,
+    `**Fallback tickets category:** ${catId ? `<#${catId}> (\`${catId}\`)` : '_(not set)_'}`,
     `**Staff roles:** ${staffIds.length ? staffIds.map((id) => `<@&${id}>`).join(' ') : '_(none — only opener can see ticket)_'}`,
     `**Panel categories:** ${panelCats.length} configured`,
+    '',
+    '_Transcript + log channel settings now live on the web (or are temporarily disabled). Edit business-wide settings at https://tickets.euphoric.fm/admin._',
   ]
   const catJsonPreview =
     '```json\n' +
@@ -127,7 +126,7 @@ async function openSettings(interaction: ChatInputCommandInteraction): Promise<v
 
 async function claimHere(interaction: ChatInputCommandInteraction): Promise<void> {
   const member = await interaction.guild!.members.fetch(interaction.user.id)
-  const staffRoles = await getStaffRoleIds()
+  const staffRoles = await getStaffRoleIds(interaction.guild!.id)
   const isStaff = staffRoles.some((id) => member.roles.cache.has(id))
   if (!isStaff && !isSudoUser(member)) {
     await interaction.reply({ content: 'Only staff can claim tickets.', ephemeral: true })
@@ -135,7 +134,7 @@ async function claimHere(interaction: ChatInputCommandInteraction): Promise<void
   }
 
   const channelId = interaction.channelId
-  const rows = await db.select().from(tickets).where(eq(tickets.channelId, channelId)).limit(1)
+  const rows = await db.select().from(tickets).where(eq(tickets.discordChannelId, channelId)).limit(1)
   const ticket = rows[0]
   if (!ticket) {
     await interaction.reply({ content: 'This channel is not a ticket.', ephemeral: true })
@@ -153,16 +152,17 @@ async function claimHere(interaction: ChatInputCommandInteraction): Promise<void
 async function closeHere(interaction: ChatInputCommandInteraction): Promise<void> {
   const member = await interaction.guild!.members.fetch(interaction.user.id)
   const channelId = interaction.channelId
-  const rows = await db.select().from(tickets).where(eq(tickets.channelId, channelId)).limit(1)
+  const rows = await db.select().from(tickets).where(eq(tickets.discordChannelId, channelId)).limit(1)
   const ticket = rows[0]
   if (!ticket) {
     await interaction.reply({ content: 'This channel is not a ticket.', ephemeral: true })
     return
   }
 
-  const staffRoles = await getStaffRoleIds()
+  const staffRoles = await getStaffRoleIds(interaction.guild!.id)
   const isStaff = staffRoles.some((id) => member.roles.cache.has(id))
-  const isOpener = ticket.openerDiscordId === member.id
+  const openerDiscordId = await getDiscordIdForUserId(ticket.openerUserId)
+  const isOpener = openerDiscordId === member.id
   if (!isStaff && !isOpener && !isSudoUser(member)) {
     await interaction.reply({ content: 'Only the opener or staff can close this ticket.', ephemeral: true })
     return
@@ -175,7 +175,7 @@ async function closeHere(interaction: ChatInputCommandInteraction): Promise<void
 
 async function addMember(interaction: ChatInputCommandInteraction): Promise<void> {
   const member = await interaction.guild!.members.fetch(interaction.user.id)
-  const staffRoles = await getStaffRoleIds()
+  const staffRoles = await getStaffRoleIds(interaction.guild!.id)
   const isStaff = staffRoles.some((id) => member.roles.cache.has(id))
   if (!isStaff && !isSudoUser(member)) {
     await interaction.reply({ content: 'Only staff can add members to a ticket.', ephemeral: true })
@@ -184,13 +184,13 @@ async function addMember(interaction: ChatInputCommandInteraction): Promise<void
 
   const target = interaction.options.getUser('user', true)
   const channelId = interaction.channelId
-  const rows = await db.select().from(tickets).where(eq(tickets.channelId, channelId)).limit(1)
+  const rows = await db.select().from(tickets).where(eq(tickets.discordChannelId, channelId)).limit(1)
   const ticket = rows[0]
   if (!ticket) {
     await interaction.reply({ content: 'This channel is not a ticket.', ephemeral: true })
     return
   }
-  if (ticket.status !== 'open') {
+  if (ticket.status === 'closed') {
     await interaction.reply({ content: 'This ticket is already closed.', ephemeral: true })
     return
   }
@@ -225,7 +225,7 @@ async function addMember(interaction: ChatInputCommandInteraction): Promise<void
 
 async function removeMember(interaction: ChatInputCommandInteraction): Promise<void> {
   const member = await interaction.guild!.members.fetch(interaction.user.id)
-  const staffRoles = await getStaffRoleIds()
+  const staffRoles = await getStaffRoleIds(interaction.guild!.id)
   const isStaff = staffRoles.some((id) => member.roles.cache.has(id))
   if (!isStaff && !isSudoUser(member)) {
     await interaction.reply({ content: 'Only staff can remove members from a ticket.', ephemeral: true })
@@ -234,17 +234,18 @@ async function removeMember(interaction: ChatInputCommandInteraction): Promise<v
 
   const target = interaction.options.getUser('user', true)
   const channelId = interaction.channelId
-  const rows = await db.select().from(tickets).where(eq(tickets.channelId, channelId)).limit(1)
+  const rows = await db.select().from(tickets).where(eq(tickets.discordChannelId, channelId)).limit(1)
   const ticket = rows[0]
   if (!ticket) {
     await interaction.reply({ content: 'This channel is not a ticket.', ephemeral: true })
     return
   }
-  if (ticket.status !== 'open') {
+  if (ticket.status === 'closed') {
     await interaction.reply({ content: 'This ticket is already closed.', ephemeral: true })
     return
   }
-  if (target.id === ticket.openerDiscordId) {
+  const openerDiscordId = await getDiscordIdForUserId(ticket.openerUserId)
+  if (target.id === openerDiscordId) {
     await interaction.reply({ content: 'Cannot remove the ticket opener — close the ticket instead.', ephemeral: true })
     return
   }
@@ -273,7 +274,7 @@ async function removeMember(interaction: ChatInputCommandInteraction): Promise<v
 
 async function listTickets(interaction: ChatInputCommandInteraction): Promise<void> {
   const member = await interaction.guild!.members.fetch(interaction.user.id)
-  const staffRoles = await getStaffRoleIds()
+  const staffRoles = await getStaffRoleIds(interaction.guild!.id)
   const isStaff = staffRoles.some((id) => member.roles.cache.has(id))
   if (!isStaff && !isSudoUser(member)) {
     await interaction.reply({ content: 'Only staff can list tickets.', ephemeral: true })
@@ -282,10 +283,28 @@ async function listTickets(interaction: ChatInputCommandInteraction): Promise<vo
 
   await interaction.deferReply({ ephemeral: true })
 
+  const business = await getBusinessByGuildId(interaction.guild!.id)
+  if (!business) {
+    await interaction.editReply(
+      'This server is not configured as a business — create one at https://tickets.euphoric.fm/admin.',
+    )
+    return
+  }
+
   const rows = await db
-    .select()
+    .select({
+      id: tickets.id,
+      categoryId: tickets.categoryId,
+      discordChannelId: tickets.discordChannelId,
+      openerUserId: tickets.openerUserId,
+      assigneeUserId: tickets.assigneeUserId,
+      openedAt: tickets.openedAt,
+      status: tickets.status,
+      categoryKey: ticketCategories.key,
+    })
     .from(tickets)
-    .where(and(eq(tickets.guildId, interaction.guildId!), eq(tickets.status, 'open')))
+    .leftJoin(ticketCategories, eq(ticketCategories.id, tickets.categoryId))
+    .where(and(eq(tickets.businessId, business.id), ne(tickets.status, 'closed')))
     .orderBy(asc(tickets.openedAt))
 
   if (rows.length === 0) {
@@ -295,11 +314,23 @@ async function listTickets(interaction: ChatInputCommandInteraction): Promise<vo
 
   const MAX_ROWS = 25
   const shown = rows.slice(0, MAX_ROWS)
-  const lines = shown.map((t) => {
-    const opened = Math.floor(t.openedAt.getTime() / 1000)
-    const claim = t.claimerDiscordId ? `claimed by <@${t.claimerDiscordId}>` : '_unclaimed_'
-    return `**#${t.id}** \`${t.categoryKey}\` · <#${t.channelId}> · <@${t.openerDiscordId}> · ${claim} · <t:${opened}:R>`
-  })
+  // Resolve all opener / assignee Discord IDs in parallel to keep latency
+  // bounded — each lookup is cached so the cost is mostly one round-trip
+  // the first time staff hits /tickets list.
+  const lines = await Promise.all(
+    shown.map(async (t) => {
+      const opened = Math.floor(t.openedAt.getTime() / 1000)
+      const [openerDid, assigneeDid] = await Promise.all([
+        getDiscordIdForUserId(t.openerUserId),
+        t.assigneeUserId ? getDiscordIdForUserId(t.assigneeUserId) : Promise.resolve(null),
+      ])
+      const claim = assigneeDid ? `claimed by <@${assigneeDid}>` : '_unclaimed_'
+      const channelRef = t.discordChannelId ? `<#${t.discordChannelId}>` : '_(no channel)_'
+      const opener = openerDid ? `<@${openerDid}>` : '_(unknown)_'
+      const cat = t.categoryKey ?? '_(no category)_'
+      return `**#${t.id}** \`${cat}\` · ${channelRef} · ${opener} · ${claim} · <t:${opened}:R>`
+    }),
+  )
   const overflow = rows.length > MAX_ROWS ? `\n_…and ${rows.length - MAX_ROWS} more._` : ''
 
   const container = new ContainerBuilder()
@@ -317,7 +348,7 @@ async function listTickets(interaction: ChatInputCommandInteraction): Promise<vo
 
 async function renameTicket(interaction: ChatInputCommandInteraction): Promise<void> {
   const member = await interaction.guild!.members.fetch(interaction.user.id)
-  const staffRoles = await getStaffRoleIds()
+  const staffRoles = await getStaffRoleIds(interaction.guild!.id)
   const isStaff = staffRoles.some((id) => member.roles.cache.has(id))
   if (!isStaff && !isSudoUser(member)) {
     await interaction.reply({ content: 'Only staff can rename tickets.', ephemeral: true })
@@ -325,13 +356,13 @@ async function renameTicket(interaction: ChatInputCommandInteraction): Promise<v
   }
 
   const channelId = interaction.channelId
-  const rows = await db.select().from(tickets).where(eq(tickets.channelId, channelId)).limit(1)
+  const rows = await db.select().from(tickets).where(eq(tickets.discordChannelId, channelId)).limit(1)
   const ticket = rows[0]
   if (!ticket) {
     await interaction.reply({ content: 'This channel is not a ticket.', ephemeral: true })
     return
   }
-  if (ticket.status !== 'open') {
+  if (ticket.status === 'closed') {
     await interaction.reply({ content: 'This ticket is already closed.', ephemeral: true })
     return
   }

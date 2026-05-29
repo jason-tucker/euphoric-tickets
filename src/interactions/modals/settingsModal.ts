@@ -1,12 +1,13 @@
 import type { ModalSubmitInteraction } from 'discord.js'
 import { isSudoUser } from '../../services/sudoService'
 import {
-  SETTING_KEYS,
   isSnowflake,
   parseSnowflakeCsv,
-  setSetting,
+  replaceTicketCategories,
+  updateBusinessSettings,
   validatePanelCategoriesJson,
 } from '../../services/settingsService'
+import { getBusinessByGuildId } from '../../services/businessResolver'
 
 export async function handleSettingsModalSubmit(interaction: ModalSubmitInteraction): Promise<void> {
   if (!interaction.inGuild() || !interaction.guild) return
@@ -19,23 +20,23 @@ export async function handleSettingsModalSubmit(interaction: ModalSubmitInteract
 
   await interaction.deferReply({ ephemeral: true })
 
+  // Require an existing business row — the bot doesn't bootstrap one
+  // from scratch. Admins do that via the web at /admin.
+  const business = await getBusinessByGuildId(interaction.guild.id)
+  if (!business) {
+    await interaction.editReply(
+      'This server is not configured as a business — create one at https://tickets.euphoric.fm/admin.',
+    )
+    return
+  }
+
   const categoryId = interaction.fields.getTextInputValue('category_id').trim()
-  const transcriptChannelId = interaction.fields.getTextInputValue('transcript_channel_id').trim()
-  const logChannelId = interaction.fields.getTextInputValue('log_channel_id').trim()
   const staffRoleIdsRaw = interaction.fields.getTextInputValue('staff_role_ids').trim()
   const panelCategoriesRaw = interaction.fields.getTextInputValue('panel_categories')
 
   const errors: string[] = []
 
-  if (!isSnowflake(categoryId)) errors.push('• Tickets category ID is not a valid Discord snowflake.')
-
-  if (transcriptChannelId && !isSnowflake(transcriptChannelId)) {
-    errors.push('• Transcript channel ID is not a valid Discord snowflake.')
-  }
-
-  if (logChannelId && !isSnowflake(logChannelId)) {
-    errors.push('• Log channel ID is not a valid Discord snowflake.')
-  }
+  if (!isSnowflake(categoryId)) errors.push('• Fallback tickets category ID is not a valid Discord snowflake.')
 
   const { ok: validStaff, bad: badStaff } = parseSnowflakeCsv(staffRoleIdsRaw)
   if (badStaff.length) errors.push(`• Invalid staff role IDs: \`${badStaff.join('`, `')}\``)
@@ -48,25 +49,29 @@ export async function handleSettingsModalSubmit(interaction: ModalSubmitInteract
     return
   }
 
-  await Promise.all([
-    setSetting(SETTING_KEYS.categoryId, categoryId),
-    setSetting(SETTING_KEYS.transcriptChannelId, transcriptChannelId),
-    setSetting(SETTING_KEYS.logChannelId, logChannelId),
-    setSetting(SETTING_KEYS.staffRoleIds, JSON.stringify(validStaff)),
-    panelResult.ok ? setSetting(SETTING_KEYS.panelCategories, JSON.stringify(panelResult.value)) : Promise.resolve(),
-  ])
+  await updateBusinessSettings(interaction.guild.id, {
+    discordFallbackCategoryId: categoryId,
+    adminRoleIds: validStaff.join(','),
+  })
+
+  if (panelResult.ok) {
+    const result = await replaceTicketCategories(interaction.guild.id, panelResult.value)
+    if (!result.ok) {
+      await interaction.editReply(result.reason)
+      return
+    }
+  }
 
   const summary = [
     '✓ Settings saved.',
-    `**Tickets category:** <#${categoryId}>`,
-    transcriptChannelId ? `**Transcript channel:** <#${transcriptChannelId}>` : '**Transcript channel:** _(none)_',
-    logChannelId ? `**Log channel:** <#${logChannelId}>` : '**Log channel:** _(none)_',
+    `**Fallback tickets category:** <#${categoryId}>`,
     validStaff.length
       ? `**Staff roles:** ${validStaff.map((id) => `<@&${id}>`).join(' ')}`
       : '**Staff roles:** _(none)_',
     `**Panel categories:** ${panelResult.ok ? panelResult.value.length : 0} configured`,
     '',
     '_Run `/panel refresh` on existing panels to apply the new category buttons._',
+    '_Transcript + log channel settings are no longer bot-managed — they\'ll come back when the web schema grows columns for them._',
   ].join('\n')
   await interaction.editReply({ content: summary, allowedMentions: { parse: [] } })
 }

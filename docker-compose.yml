@@ -5,11 +5,13 @@ services:
     restart: unless-stopped
     env_file: .env
     environment:
-      DATABASE_URL: "postgresql://tickets:${POSTGRES_PASSWORD:-tickets_dev}@db:5432/tickets"
+      # Shared Postgres on efm-public-net — the web (euphoric-tickets-web)
+      # owns the schema and runs drizzle-kit push. POSTGRES_PASSWORD must
+      # match what the web stack uses (`.env` of both is the same).
+      DATABASE_URL: "postgresql://tickets_web:${POSTGRES_PASSWORD:-tickets_web_dev}@tickets-db:5432/tickets_web"
       NODE_ENV: production
-    depends_on:
-      db:
-        condition: service_healthy
+    networks:
+      - efm-public-net
     labels:
       com.centurylinklabs.watchtower.enable: "true"
     logging:
@@ -18,28 +20,8 @@ services:
         max-size: "10m"
         max-file: "3"
 
-  db:
-    image: postgres:16-alpine
-    restart: unless-stopped
-    environment:
-      POSTGRES_USER: tickets
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-tickets_dev}
-      POSTGRES_DB: tickets
-    expose:
-      - "5432"
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U tickets"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-      start_period: 15s
-    logging:
-      driver: json-file
-      options:
-        max-size: "5m"
-        max-file: "2"
-
-volumes:
-  postgres_data:
+networks:
+  # Web's db container exposes itself here as `tickets-db`. Created by
+  # the web stack; declare external here so we just join it.
+  efm-public-net:
+    external: true

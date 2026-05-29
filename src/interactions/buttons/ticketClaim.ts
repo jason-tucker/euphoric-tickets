@@ -2,9 +2,11 @@ import type { ButtonInteraction, TextChannel } from 'discord.js'
 import { eq } from 'drizzle-orm'
 import { db } from '../../db/client'
 import { tickets } from '../../db/schema/tickets'
+import { ticketCategories } from '../../db/schema/ticketCategories'
 import { claimTicket } from '../../services/ticketService'
 import { buildTicketWelcome } from '../../services/ticketRenderer'
 import { getPanelCategories, getStaffRoleIds } from '../../services/settingsService'
+import { getDiscordIdForUserId } from '../../services/userResolver'
 import { isSudoUser } from '../../services/sudoService'
 
 export async function handleTicketClaim(interaction: ButtonInteraction): Promise<void> {
@@ -17,7 +19,7 @@ export async function handleTicketClaim(interaction: ButtonInteraction): Promise
   }
 
   const member = await interaction.guild.members.fetch(interaction.user.id)
-  const staffRoles = await getStaffRoleIds()
+  const staffRoles = await getStaffRoleIds(interaction.guild.id)
   const isStaff = staffRoles.some((id) => member.roles.cache.has(id))
   if (!isStaff && !isSudoUser(member)) {
     await interaction.reply({ content: 'Only staff can claim tickets.', ephemeral: true })
@@ -36,14 +38,30 @@ export async function handleTicketClaim(interaction: ButtonInteraction): Promise
     return
   }
 
-  const panelCats = await getPanelCategories()
-  const cat = panelCats.find((c) => c.key === ticket.categoryKey)
+  // Resolve category label + opener snowflake for the welcome refresh.
+  const [catRow] = ticket.categoryId
+    ? await db
+        .select({ label: ticketCategories.label, key: ticketCategories.key })
+        .from(ticketCategories)
+        .where(eq(ticketCategories.id, ticket.categoryId))
+        .limit(1)
+    : [undefined]
+
+  const panelCats = await getPanelCategories(interaction.guild.id)
+  const panelCat = catRow ? panelCats.find((c) => c.key === catRow.key) : undefined
+  const categoryLabel = panelCat?.label ?? catRow?.label ?? 'Ticket'
+
+  const openerDiscordId = (await getDiscordIdForUserId(ticket.openerUserId)) ?? '0'
+  const claimerDiscordId = result.updated.assigneeUserId
+    ? await getDiscordIdForUserId(result.updated.assigneeUserId)
+    : null
+
   const welcome = buildTicketWelcome({
     ticketId: ticket.id,
-    openerId: ticket.openerDiscordId,
-    categoryLabel: cat?.label ?? ticket.categoryKey,
+    openerId: openerDiscordId,
+    categoryLabel,
     staffRoleIds: staffRoles,
-    claimerId: result.updated.claimerDiscordId,
+    claimerId: claimerDiscordId,
   })
 
   const msg = interaction.message
