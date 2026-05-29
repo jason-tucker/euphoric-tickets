@@ -186,7 +186,11 @@ export async function closeTicket(opts: {
     .where(eq(tickets.id, ticket.id))
 
   const transcriptChannelId = await getTranscriptChannelId()
-  if (transcriptChannelId) {
+  // Render the transcript once if either destination is configured —
+  // re-fetching the channel history per destination would be wasteful and
+  // the second fetch would see the channel after the first has touched it.
+  const wantOpenerDm = true
+  if (transcriptChannelId || wantOpenerDm) {
     try {
       const messages = await fetchAllMessages(channel)
       const opener = await guild.members.fetch(ticket.openerDiscordId).catch(() => null)
@@ -198,19 +202,35 @@ export async function closeTicket(opts: {
         closedByTag: closer.user.tag,
         messages,
       })
-      const file = new AttachmentBuilder(Buffer.from(html, 'utf8'), {
-        name: `ticket-${ticket.id}-${channel.name}.html`,
-      })
-      const transcriptCh = await guild.channels.fetch(transcriptChannelId).catch(() => null)
-      if (transcriptCh && transcriptCh.isTextBased() && !transcriptCh.isDMBased()) {
-        await transcriptCh.send({
-          content:
-            `**Ticket #${ticket.id}** closed by <@${closer.id}>\n` +
-            `Opened by <@${ticket.openerDiscordId}> · Category: \`${ticket.categoryKey}\` · ${messages.length} messages`,
-          files: [file],
-        })
-      } else {
-        log.warn('Transcript channel not text-based', { transcriptChannelId })
+      const buf = Buffer.from(html, 'utf8')
+
+      if (transcriptChannelId) {
+        const file = new AttachmentBuilder(buf, { name: `ticket-${ticket.id}-${channel.name}.html` })
+        const transcriptCh = await guild.channels.fetch(transcriptChannelId).catch(() => null)
+        if (transcriptCh && transcriptCh.isTextBased() && !transcriptCh.isDMBased()) {
+          await transcriptCh.send({
+            content:
+              `**Ticket #${ticket.id}** closed by <@${closer.id}>\n` +
+              `Opened by <@${ticket.openerDiscordId}> · Category: \`${ticket.categoryKey}\` · ${messages.length} messages`,
+            files: [file],
+          })
+        } else {
+          log.warn('Transcript channel not text-based', { transcriptChannelId })
+        }
+      }
+
+      if (opener) {
+        const dmFile = new AttachmentBuilder(buf, { name: `ticket-${ticket.id}-${channel.name}.html` })
+        await opener
+          .send({
+            content:
+              `Your ticket **#${ticket.id}** in **${guild.name}** was closed by ${closer.user.tag}. ` +
+              `A full transcript is attached.`,
+            files: [dmFile],
+          })
+          .catch((err) => {
+            log.info('Opener DM failed (likely DMs closed)', { ticketId: ticket.id, err: String(err) })
+          })
       }
     } catch (err) {
       log.error('Transcript generation failed', { ticketId: ticket.id, err: String(err) })
