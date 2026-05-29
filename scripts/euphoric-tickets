@@ -1,0 +1,134 @@
+#!/usr/bin/env bash
+# euphoric-tickets — management CLI for the Docker-based deployment
+#
+# Install once on a server:
+#   sudo cp scripts/euphoric-tickets /usr/local/bin/euphoric-tickets
+#   sudo chmod +x /usr/local/bin/euphoric-tickets
+
+set -Eeuo pipefail
+
+SERVICE="euphoric-tickets"
+
+detect_project_dir() {
+    if [ -n "${PROJECT_DIR:-}" ] && [ -f "$PROJECT_DIR/docker-compose.yml" ]; then
+        echo "$PROJECT_DIR"; return
+    fi
+    for candidate in \
+        "$HOME/projects/euphoric-tickets" \
+        "/home/botuser/projects/euphoric-tickets" \
+        "/root/projects/euphoric-tickets" \
+        "$(pwd)"; do
+        if [ -f "$candidate/docker-compose.yml" ]; then
+            echo "$candidate"; return
+        fi
+    done
+    echo "ERROR: euphoric-tickets project directory not found." >&2
+    echo "Set PROJECT_DIR=/path/to/euphoric-tickets or run from inside the repo." >&2
+    exit 1
+}
+
+PROJECT_DIR=$(detect_project_dir)
+cd "$PROJECT_DIR"
+
+cmd="${1:-status}"
+shift || true
+
+case "$cmd" in
+    start)
+        docker compose up -d "$@"
+        docker compose ps
+        ;;
+    stop)
+        docker compose stop
+        echo "✓ stack stopped."
+        ;;
+    down)
+        docker compose down "$@"
+        echo "✓ stack removed."
+        ;;
+    restart)
+        docker compose restart "$SERVICE"
+        echo "✓ $SERVICE restarted."
+        docker compose ps "$SERVICE"
+        ;;
+    status|ps)
+        docker compose ps
+        ;;
+    logs)
+        docker compose logs "$SERVICE" -f --tail=50 "$@"
+        ;;
+    tail)
+        N="${1:-30}"
+        docker compose logs "$SERVICE" --tail="$N"
+        ;;
+    pull)
+        docker compose pull "$@"
+        ;;
+    update)
+        echo "▶ Pulling latest source..."
+        git fetch --all
+        git reset --hard origin/main
+        echo "▶ Pulling latest image..."
+        docker compose pull "$SERVICE"
+        echo "▶ Restarting..."
+        docker compose up -d --remove-orphans
+        echo "✓ updated."
+        docker compose ps
+        ;;
+    build)
+        docker compose build "$@"
+        ;;
+    rebuild)
+        docker compose up -d --build --remove-orphans
+        ;;
+    deploy)
+        # Register slash commands against the live image.
+        if [ -z "${DISCORD_BOT_TOKEN:-}" ] || [ -z "${DISCORD_CLIENT_ID:-}" ] || [ -z "${GUILD_ID:-}" ]; then
+            set -a
+            # shellcheck disable=SC1091
+            . ./.env
+            set +a
+        fi
+        docker compose run --rm "$SERVICE" node dist/bot/registerCommands.js
+        ;;
+    shell|exec)
+        docker compose exec "$SERVICE" sh
+        ;;
+    db:shell|psql)
+        # shellcheck disable=SC1091
+        . <(grep '^POSTGRES_PASSWORD=' .env)
+        docker compose exec db psql -U tickets tickets
+        ;;
+    env)
+        ${EDITOR:-nano} .env
+        echo "▶ Reloading containers to pick up env changes..."
+        docker compose up -d
+        ;;
+    where)
+        echo "$PROJECT_DIR"
+        ;;
+    *)
+        cat <<EOF
+Usage: euphoric-tickets <command>
+
+  start         start the stack (bot + db)
+  stop          stop the stack (preserves volumes)
+  restart       restart just the bot container
+  down          stop and remove containers (preserves volumes)
+  status / ps   show container status
+  logs          tail live logs (Ctrl+C to exit)
+  tail [N]      show last N lines (default 30)
+  pull          pull latest image from registry
+  update        git pull + docker compose pull + up -d
+  build         build image locally
+  rebuild       up -d with --build (rebuild and restart)
+  deploy        register slash commands (uses .env values)
+  shell / exec  open a shell inside the bot container
+  db:shell      open a psql shell against the postgres container
+  env           edit .env and restart to apply
+  where         print the auto-detected project directory
+
+Project dir: $PROJECT_DIR
+EOF
+        ;;
+esac

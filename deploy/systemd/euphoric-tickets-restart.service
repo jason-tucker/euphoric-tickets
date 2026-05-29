@@ -1,0 +1,13 @@
+[Unit]
+Description=Weekly restart of Euphoric Tickets container
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/botuser/projects/euphoric-tickets
+ExecStart=/usr/bin/docker compose restart euphoric-tickets
+User=botuser
+
+# Install:
+#   sudo cp deploy/systemd/euphoric-tickets-restart.{service,timer} /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now euphoric-tickets-restart.timer

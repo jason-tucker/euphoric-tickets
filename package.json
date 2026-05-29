@@ -1,0 +1,35 @@
+{
+  "name": "euphoric-tickets",
+  "version": "0.1.0",
+  "description": "Euphoric Tickets — Discord ticket bot",
+  "main": "dist/index.js",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "node --max-old-space-size=4096 node_modules/typescript/bin/tsc",
+    "start": "node dist/index.js",
+    "typecheck": "node --max-old-space-size=384 node_modules/typescript/bin/tsc --noEmit",
+    "commands:deploy": "tsx src/bot/registerCommands.ts",
+    "commands:clear": "tsx scripts/clearCommands.ts",
+    "deploy:commands": "node dist/bot/registerCommands.js",
+    "db:generate": "drizzle-kit generate",
+    "db:push": "drizzle-kit push",
+    "db:studio": "drizzle-kit studio"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "packageManager": "pnpm@10.33.2",
+  "dependencies": {
+    "discord.js": "^14.26.3",
+    "dotenv": "^17.4.2",
+    "drizzle-orm": "^0.45.2",
+    "postgres": "^3.4.9",
+    "zod": "^4.4.1"
+  },
+  "devDependencies": {
+    "@types/node": "^25.7.0",
+    "drizzle-kit": "^0.31.10",
+    "tsx": "^4.21.0",
+    "typescript": "^6.0.3"
+  }
+}

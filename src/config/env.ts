@@ -1,0 +1,49 @@
+import { z } from 'zod'
+import 'dotenv/config'
+
+const SNOWFLAKE_RE = /^\d{17,20}$/
+
+const csvSnowflakes = z
+  .string()
+  .optional()
+  .refine(
+    (val) => {
+      if (val === undefined) return true
+      const tokens = val.split(',').map((s) => s.trim()).filter(Boolean)
+      return tokens.every((t) => SNOWFLAKE_RE.test(t))
+    },
+    { message: 'each entry must be a Discord snowflake' },
+  )
+
+const envSchema = z.object({
+  DISCORD_BOT_TOKEN: z.string().min(1, 'DISCORD_BOT_TOKEN is required'),
+  DISCORD_CLIENT_ID: z.string().regex(SNOWFLAKE_RE, 'must be a Discord snowflake'),
+  GUILD_ID: z.string().regex(SNOWFLAKE_RE, 'must be a Discord snowflake'),
+  DATABASE_URL: z.string().min(1, 'DATABASE_URL is required'),
+  NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
+  SUDO_ROLE_IDS: csvSnowflakes,
+  SUDO_USER_IDS: csvSnowflakes,
+  BOT_OWNER_ID: z.string().regex(SNOWFLAKE_RE, 'must be a Discord snowflake').optional(),
+  UPTIME_KUMA_PUSH_URL: z.string().url().optional(),
+})
+
+const parsed = envSchema.safeParse(process.env)
+
+if (!parsed.success) {
+  console.error('❌ Invalid environment variables:')
+  for (const issue of parsed.error.issues) {
+    console.error(`  ${issue.path.join('.')}: ${issue.message}`)
+  }
+  process.exit(1)
+}
+
+const raw = parsed.data
+
+const splitCsv = (val: string | undefined): string[] =>
+  (val ?? '').split(',').map((s) => s.trim()).filter(Boolean)
+
+export const env = {
+  ...raw,
+  sudoRoleIds: splitCsv(raw.SUDO_ROLE_IDS),
+  sudoUserIds: splitCsv(raw.SUDO_USER_IDS),
+}
