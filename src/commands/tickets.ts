@@ -12,7 +12,7 @@ import {
   type TextChannel,
 } from 'discord.js'
 import { logTicketEvent } from '../services/ticketLogger'
-import { eq } from 'drizzle-orm'
+import { and, asc, eq } from 'drizzle-orm'
 import { db } from '../db/client'
 import { tickets } from '../db/schema/tickets'
 import { isSudoUser } from '../services/sudoService'
@@ -56,6 +56,7 @@ export const data = new SlashCommandBuilder()
           .setMaxLength(90),
       ),
   )
+  .addSubcommand((sc) => sc.setName('list').setDescription('List open tickets (staff)'))
   .setDMPermission(false)
 
 export async function execute(interaction: ChatInputCommandInteraction): Promise<void> {
@@ -70,6 +71,7 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
   if (sub === 'add') return await addMember(interaction)
   if (sub === 'remove') return await removeMember(interaction)
   if (sub === 'rename') return await renameTicket(interaction)
+  if (sub === 'list') return await listTickets(interaction)
 }
 
 async function openSettings(interaction: ChatInputCommandInteraction): Promise<void> {
@@ -267,6 +269,50 @@ async function removeMember(interaction: ChatInputCommandInteraction): Promise<v
       Channel: `<#${channel.id}>`,
     },
   })
+}
+
+async function listTickets(interaction: ChatInputCommandInteraction): Promise<void> {
+  const member = await interaction.guild!.members.fetch(interaction.user.id)
+  const staffRoles = await getStaffRoleIds()
+  const isStaff = staffRoles.some((id) => member.roles.cache.has(id))
+  if (!isStaff && !isSudoUser(member)) {
+    await interaction.reply({ content: 'Only staff can list tickets.', ephemeral: true })
+    return
+  }
+
+  await interaction.deferReply({ ephemeral: true })
+
+  const rows = await db
+    .select()
+    .from(tickets)
+    .where(and(eq(tickets.guildId, interaction.guildId!), eq(tickets.status, 'open')))
+    .orderBy(asc(tickets.openedAt))
+
+  if (rows.length === 0) {
+    await interaction.editReply('No open tickets. 🎉')
+    return
+  }
+
+  const MAX_ROWS = 25
+  const shown = rows.slice(0, MAX_ROWS)
+  const lines = shown.map((t) => {
+    const opened = Math.floor(t.openedAt.getTime() / 1000)
+    const claim = t.claimerDiscordId ? `claimed by <@${t.claimerDiscordId}>` : '_unclaimed_'
+    return `**#${t.id}** \`${t.categoryKey}\` · <#${t.channelId}> · <@${t.openerDiscordId}> · ${claim} · <t:${opened}:R>`
+  })
+  const overflow = rows.length > MAX_ROWS ? `\n_…and ${rows.length - MAX_ROWS} more._` : ''
+
+  const container = new ContainerBuilder()
+    .setAccentColor(0xa855f7)
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent(`## 🎫 Open tickets — ${rows.length}`))
+    .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true))
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent(lines.join('\n') + overflow))
+
+  await interaction.editReply({
+    flags: MessageFlags.IsComponentsV2,
+    components: [container],
+    allowedMentions: { parse: [] },
+  } as any)
 }
 
 async function renameTicket(interaction: ChatInputCommandInteraction): Promise<void> {
