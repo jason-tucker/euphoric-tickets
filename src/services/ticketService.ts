@@ -157,6 +157,7 @@ export async function openTicket(opts: {
     categoryLabel: cat.label,
     staffRoleIds,
     claimerId: null,
+    webUrl: `${env.WEB_BASE_URL}/b/${business.slug}/tickets/${row.id}`,
   })
 
   const pingContent = staffRoleIds.length

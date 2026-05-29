@@ -49,8 +49,12 @@ export function buildTicketWelcome(opts: {
   categoryLabel: string
   staffRoleIds: string[]
   claimerId: string | null
+  // Optional URL to the web ticket detail (D2). Rendered as a Link
+  // button alongside Claim/Close so staff and the opener can deep-link
+  // to the web companion.
+  webUrl?: string | null
 }) {
-  const { ticketId, openerId, categoryLabel, staffRoleIds, claimerId } = opts
+  const { ticketId, openerId, categoryLabel, staffRoleIds, claimerId, webUrl } = opts
 
   const lines: string[] = [
     `## 🎫 Ticket #${ticketId} — ${categoryLabel}`,
@@ -83,6 +87,15 @@ export function buildTicketWelcome(opts: {
     .setEmoji('🔒')
 
   const row = new ActionRowBuilder<ButtonBuilder>().addComponents(claimBtn, closeBtn)
+  if (webUrl) {
+    row.addComponents(
+      new ButtonBuilder()
+        .setLabel('Open in web')
+        .setStyle(ButtonStyle.Link)
+        .setURL(webUrl)
+        .setEmoji('🌐'),
+    )
+  }
 
   return {
     flags: MessageFlags.IsComponentsV2,

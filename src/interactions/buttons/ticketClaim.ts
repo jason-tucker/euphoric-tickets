@@ -7,7 +7,9 @@ import { claimTicket } from '../../services/ticketService'
 import { buildTicketWelcome } from '../../services/ticketRenderer'
 import { getPanelCategories, getStaffRoleIds } from '../../services/settingsService'
 import { getDiscordIdForUserId } from '../../services/userResolver'
+import { getBusinessByGuildId } from '../../services/businessResolver'
 import { isSudoUser } from '../../services/sudoService'
+import { env } from '../../config/env'
 
 export async function handleTicketClaim(interaction: ButtonInteraction): Promise<void> {
   if (!interaction.inGuild() || !interaction.guild) return
@@ -55,6 +57,7 @@ export async function handleTicketClaim(interaction: ButtonInteraction): Promise
   const claimerDiscordId = result.updated.assigneeUserId
     ? await getDiscordIdForUserId(result.updated.assigneeUserId)
     : null
+  const webBusiness = await getBusinessByGuildId(interaction.guild.id)
 
   const welcome = buildTicketWelcome({
     ticketId: ticket.id,
@@ -62,6 +65,7 @@ export async function handleTicketClaim(interaction: ButtonInteraction): Promise
     categoryLabel,
     staffRoleIds: staffRoles,
     claimerId: claimerDiscordId,
+    webUrl: webBusiness ? `${env.WEB_BASE_URL}/b/${webBusiness.slug}/tickets/${ticket.id}` : null,
   })
 
   const msg = interaction.message

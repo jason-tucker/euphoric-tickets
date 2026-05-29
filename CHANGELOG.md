@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.1] — 2026-05-29
+
+### Added
+- **"Open in web" Link button on the ticket-channel welcome card (D2 polish)** — `buildTicketWelcome()` now accepts an optional `webUrl` and renders a `ButtonStyle.Link` next to Claim and Close when set. `openTicket()` passes `WEB_BASE_URL/b/<slug>/tickets/<id>`; the claim re-render preserves it via `getBusinessByGuildId(guild.id)`. Staff and the opener can jump straight to the web companion without copy-pasting.
+
+The bulk of D2 (Container + Section + Buttons V2 layout) was already on the welcome card; this just lands the missing link. The bigger Components V2 information panel restyling (opener body in a Section, etc.) stays on the to-do list as a polish follow-up.
+
 ## [0.5.0] — 2026-05-29 — Scheduled cleanup + Discord-side admin parity
 
 ### Added
