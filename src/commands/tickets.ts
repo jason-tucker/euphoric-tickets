@@ -11,6 +11,7 @@ import {
   TextDisplayBuilder,
   type TextChannel,
 } from 'discord.js'
+import { logTicketEvent } from '../services/ticketLogger'
 import { eq } from 'drizzle-orm'
 import { db } from '../db/client'
 import { tickets } from '../db/schema/tickets'
@@ -31,6 +32,18 @@ export const data = new SlashCommandBuilder()
   .addSubcommand((sc) => sc.setName('settings').setDescription('View/edit ticket settings (sudo)'))
   .addSubcommand((sc) => sc.setName('claim').setDescription('Claim the current ticket'))
   .addSubcommand((sc) => sc.setName('close').setDescription('Close the current ticket'))
+  .addSubcommand((sc) =>
+    sc
+      .setName('add')
+      .setDescription('Add a member to the current ticket (staff)')
+      .addUserOption((opt) => opt.setName('user').setDescription('Member to add').setRequired(true)),
+  )
+  .addSubcommand((sc) =>
+    sc
+      .setName('remove')
+      .setDescription('Remove a member from the current ticket (staff)')
+      .addUserOption((opt) => opt.setName('user').setDescription('Member to remove').setRequired(true)),
+  )
   .setDMPermission(false)
 
 export async function execute(interaction: ChatInputCommandInteraction): Promise<void> {
@@ -42,6 +55,8 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
   if (sub === 'settings') return await openSettings(interaction)
   if (sub === 'claim') return await claimHere(interaction)
   if (sub === 'close') return await closeHere(interaction)
+  if (sub === 'add') return await addMember(interaction)
+  if (sub === 'remove') return await removeMember(interaction)
 }
 
 async function openSettings(interaction: ChatInputCommandInteraction): Promise<void> {
@@ -140,6 +155,104 @@ async function closeHere(interaction: ChatInputCommandInteraction): Promise<void
 
   await interaction.reply({
     ...(buildCloseConfirm(ticket.id) as any),
+  })
+}
+
+async function addMember(interaction: ChatInputCommandInteraction): Promise<void> {
+  const member = await interaction.guild!.members.fetch(interaction.user.id)
+  const staffRoles = await getStaffRoleIds()
+  const isStaff = staffRoles.some((id) => member.roles.cache.has(id))
+  if (!isStaff && !isSudoUser(member)) {
+    await interaction.reply({ content: 'Only staff can add members to a ticket.', ephemeral: true })
+    return
+  }
+
+  const target = interaction.options.getUser('user', true)
+  const channelId = interaction.channelId
+  const rows = await db.select().from(tickets).where(eq(tickets.channelId, channelId)).limit(1)
+  const ticket = rows[0]
+  if (!ticket) {
+    await interaction.reply({ content: 'This channel is not a ticket.', ephemeral: true })
+    return
+  }
+  if (ticket.status !== 'open') {
+    await interaction.reply({ content: 'This ticket is already closed.', ephemeral: true })
+    return
+  }
+
+  const channel = interaction.channel as TextChannel | null
+  if (!channel) {
+    await interaction.reply({ content: 'Channel context missing.', ephemeral: true })
+    return
+  }
+
+  await channel.permissionOverwrites.edit(target.id, {
+    ViewChannel: true,
+    SendMessages: true,
+    ReadMessageHistory: true,
+    AttachFiles: true,
+    EmbedLinks: true,
+  })
+
+  await interaction.reply({ content: `➕ <@${target.id}> added to this ticket.`, allowedMentions: { users: [target.id] } })
+
+  void logTicketEvent({
+    guild: interaction.guild!,
+    kind: 'add',
+    ticketId: ticket.id,
+    fields: {
+      Member: `<@${target.id}>`,
+      By: `<@${member.id}>`,
+      Channel: `<#${channel.id}>`,
+    },
+  })
+}
+
+async function removeMember(interaction: ChatInputCommandInteraction): Promise<void> {
+  const member = await interaction.guild!.members.fetch(interaction.user.id)
+  const staffRoles = await getStaffRoleIds()
+  const isStaff = staffRoles.some((id) => member.roles.cache.has(id))
+  if (!isStaff && !isSudoUser(member)) {
+    await interaction.reply({ content: 'Only staff can remove members from a ticket.', ephemeral: true })
+    return
+  }
+
+  const target = interaction.options.getUser('user', true)
+  const channelId = interaction.channelId
+  const rows = await db.select().from(tickets).where(eq(tickets.channelId, channelId)).limit(1)
+  const ticket = rows[0]
+  if (!ticket) {
+    await interaction.reply({ content: 'This channel is not a ticket.', ephemeral: true })
+    return
+  }
+  if (ticket.status !== 'open') {
+    await interaction.reply({ content: 'This ticket is already closed.', ephemeral: true })
+    return
+  }
+  if (target.id === ticket.openerDiscordId) {
+    await interaction.reply({ content: 'Cannot remove the ticket opener — close the ticket instead.', ephemeral: true })
+    return
+  }
+
+  const channel = interaction.channel as TextChannel | null
+  if (!channel) {
+    await interaction.reply({ content: 'Channel context missing.', ephemeral: true })
+    return
+  }
+
+  await channel.permissionOverwrites.delete(target.id, `Removed from ticket #${ticket.id} by ${member.user.tag}`)
+
+  await interaction.reply({ content: `➖ <@${target.id}> removed from this ticket.`, allowedMentions: { parse: [] } })
+
+  void logTicketEvent({
+    guild: interaction.guild!,
+    kind: 'remove',
+    ticketId: ticket.id,
+    fields: {
+      Member: `<@${target.id}>`,
+      By: `<@${member.id}>`,
+      Channel: `<#${channel.id}>`,
+    },
   })
 }
 
