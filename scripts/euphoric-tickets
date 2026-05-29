@@ -82,14 +82,11 @@ case "$cmd" in
         docker compose up -d --build --remove-orphans
         ;;
     deploy)
-        # Register slash commands against the live image.
-        if [ -z "${DISCORD_BOT_TOKEN:-}" ] || [ -z "${DISCORD_CLIENT_ID:-}" ] || [ -z "${GUILD_ID:-}" ]; then
-            set -a
-            # shellcheck disable=SC1091
-            . ./.env
-            set +a
-        fi
-        docker compose run --rm "$SERVICE" node dist/bot/registerCommands.js
+        # Register slash commands using the live image. The compose file wires
+        # `.env` into the container via `env_file: .env`. `--entrypoint=""`
+        # bypasses the bot-launching entrypoint so we get the registration
+        # script instead of a second running bot.
+        docker compose run --rm --entrypoint="" "$SERVICE" node dist/bot/registerCommands.js
         ;;
     shell|exec)
         docker compose exec "$SERVICE" sh
