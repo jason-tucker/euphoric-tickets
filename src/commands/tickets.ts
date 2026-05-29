@@ -44,6 +44,18 @@ export const data = new SlashCommandBuilder()
       .setDescription('Remove a member from the current ticket (staff)')
       .addUserOption((opt) => opt.setName('user').setDescription('Member to remove').setRequired(true)),
   )
+  .addSubcommand((sc) =>
+    sc
+      .setName('rename')
+      .setDescription('Rename the current ticket channel (staff)')
+      .addStringOption((opt) =>
+        opt
+          .setName('name')
+          .setDescription('New channel name (will be slugified, max 90 chars)')
+          .setRequired(true)
+          .setMaxLength(90),
+      ),
+  )
   .setDMPermission(false)
 
 export async function execute(interaction: ChatInputCommandInteraction): Promise<void> {
@@ -57,6 +69,7 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
   if (sub === 'close') return await closeHere(interaction)
   if (sub === 'add') return await addMember(interaction)
   if (sub === 'remove') return await removeMember(interaction)
+  if (sub === 'rename') return await renameTicket(interaction)
 }
 
 async function openSettings(interaction: ChatInputCommandInteraction): Promise<void> {
@@ -250,6 +263,59 @@ async function removeMember(interaction: ChatInputCommandInteraction): Promise<v
     ticketId: ticket.id,
     fields: {
       Member: `<@${target.id}>`,
+      By: `<@${member.id}>`,
+      Channel: `<#${channel.id}>`,
+    },
+  })
+}
+
+async function renameTicket(interaction: ChatInputCommandInteraction): Promise<void> {
+  const member = await interaction.guild!.members.fetch(interaction.user.id)
+  const staffRoles = await getStaffRoleIds()
+  const isStaff = staffRoles.some((id) => member.roles.cache.has(id))
+  if (!isStaff && !isSudoUser(member)) {
+    await interaction.reply({ content: 'Only staff can rename tickets.', ephemeral: true })
+    return
+  }
+
+  const channelId = interaction.channelId
+  const rows = await db.select().from(tickets).where(eq(tickets.channelId, channelId)).limit(1)
+  const ticket = rows[0]
+  if (!ticket) {
+    await interaction.reply({ content: 'This channel is not a ticket.', ephemeral: true })
+    return
+  }
+  if (ticket.status !== 'open') {
+    await interaction.reply({ content: 'This ticket is already closed.', ephemeral: true })
+    return
+  }
+
+  const channel = interaction.channel as TextChannel | null
+  if (!channel) {
+    await interaction.reply({ content: 'Channel context missing.', ephemeral: true })
+    return
+  }
+
+  const rawName = interaction.options.getString('name', true)
+  const slug = rawName.toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 90)
+  if (!slug) {
+    await interaction.reply({ content: 'Name produced an empty slug — pick something with letters or digits.', ephemeral: true })
+    return
+  }
+  const finalName = `ticket-${ticket.id}-${slug}`.slice(0, 100)
+  const previousName = channel.name
+
+  await interaction.deferReply()
+  await channel.setName(finalName, `Renamed by ${member.user.tag}`)
+  await interaction.editReply({ content: `✏️ Renamed from \`#${previousName}\` to \`#${finalName}\`.`, allowedMentions: { parse: [] } })
+
+  void logTicketEvent({
+    guild: interaction.guild!,
+    kind: 'rename',
+    ticketId: ticket.id,
+    fields: {
+      'Previous name': `\`#${previousName}\``,
+      'New name': `\`#${finalName}\``,
       By: `<@${member.id}>`,
       Channel: `<#${channel.id}>`,
     },
