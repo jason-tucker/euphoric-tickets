@@ -39,8 +39,11 @@ Euphoric Tickets is a single-purpose Discord bot: members open support tickets v
 
 - `tickets.category_id` — Discord category where ticket channels are created
 - `tickets.transcript_channel_id` — where closed-ticket HTML files land
+- `tickets.log_channel_id` — where lifecycle events (open/claim/close/add/remove/rename) post CV2 cards
 - `tickets.staff_role_ids` — comma-separated; these roles see every ticket and can claim/close
 - `tickets.panel_categories` — JSON array of `{ key, label, emoji, description }` driving the panel buttons
+
+**Modal limits.** Discord caps modals at 5 ActionRows × 1 TextInput. We're at 5; any new setting needs a different surface (e.g. a buttons + selects panel) instead of being added to the modal.
 
 ---
 
@@ -50,9 +53,13 @@ Euphoric Tickets is a single-purpose Discord bot: members open support tickets v
 |---|---|---|
 | `/panel post` | Sudo | Posts the panel to the current channel; stores message ID in `ticket_panels` |
 | `/panel refresh` | Sudo | Re-renders an existing panel after settings change |
-| `/tickets settings` | Sudo | Edit settings via ephemeral panel |
+| `/tickets settings` | Sudo | Edit settings via ephemeral panel (5-field modal: category, transcript, log, staff, panel JSON) |
 | `/tickets claim` | Staff | Claim the current ticket (only in a ticket channel) |
-| `/tickets close` | Staff or opener | Close the current ticket — saves transcript, deletes channel |
+| `/tickets close` | Staff or opener | Close the current ticket — saves transcript to log/transcript channel AND DMs opener (best-effort), deletes channel |
+| `/tickets add <user>` | Staff | Add a member to the current ticket (permission overwrite) |
+| `/tickets remove <user>` | Staff | Remove a member from the current ticket (opener cannot be removed — close instead) |
+| `/tickets rename <name>` | Staff | Rename the current ticket channel; input is slugified, prefixed with `ticket-<id>-` |
+| `/tickets list` | Staff | List every open ticket in the guild (capped at 25 rows, overflow shown) |
 
 ---
 
@@ -66,6 +73,8 @@ All ticket interactions are prefixed `tk:`:
 - `tk:close_confirm:{ticketId}` / `tk:close_cancel:{ticketId}` — close confirmation
 - `tk:settings:{action}` / `tk:settings_modal:{key}` — settings UI
 
+`/tickets add|remove|rename|list` are slash subcommands rather than buttons — they don't have customIds.
+
 ---
 
 ## Database tables
@@ -75,6 +84,16 @@ All ticket interactions are prefixed `tk:`:
 | `ticket_settings` | Key/value config edited via `/tickets settings` |
 | `ticket_panels` | One row per panel message (channel ID + message ID) so `/panel refresh` can find it |
 | `tickets` | Active and closed tickets — channel ID, opener ID, category key, claimer ID, status, opened/closed timestamps |
+
+---
+
+### Ticket lifecycle (extended)
+
+After v0.2.0, every open / claim / close / add-member / remove-member / rename emits a Components V2 card to `tickets.log_channel_id` if set. Closes also DM the rendered HTML transcript to the opener best-effort (silent on DM-closed / left-guild). The same `renderTranscriptHtml` buffer is used for both the log-channel post and the opener DM — don't re-fetch channel messages twice.
+
+`/tickets add` and `/tickets remove` edit channel permission overwrites directly. The opener's overwrite is set up at ticket creation and cannot be removed via `/tickets remove` (closes the ticket instead via `/tickets close`).
+
+`/tickets rename` slugifies the input (`[a-z0-9-]`) and always preserves `ticket-<id>-` as the prefix so ticket numbers stay searchable.
 
 ---
 

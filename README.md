@@ -45,9 +45,13 @@ Subsequent deploys are automatic: push to `main` → GitHub Actions builds → p
 |---|---|---|
 | `/panel post` | Sudo | Posts the ticket panel to the current channel |
 | `/panel refresh` | Sudo | Re-renders an existing panel after settings change |
-| `/tickets settings` | Sudo | DB-backed configuration: category, staff roles, transcript channel, panel categories |
-| `/tickets close` | Staff / opener | Close the current ticket (renders transcript, deletes channel) |
+| `/tickets settings` | Sudo | DB-backed configuration: category, transcript channel, log channel, staff roles, panel categories |
 | `/tickets claim` | Staff | Claim the current ticket |
+| `/tickets close` | Staff / opener | Close the current ticket — saves transcript, DMs opener, deletes channel |
+| `/tickets add <user>` | Staff | Add a member to the current ticket |
+| `/tickets remove <user>` | Staff | Remove a member from the current ticket (opener excluded) |
+| `/tickets rename <name>` | Staff | Rename the current ticket channel (slugified, keeps `ticket-<id>-` prefix) |
+| `/tickets list` | Staff | List every open ticket in the guild |
 
 ## Environment variables
 
@@ -64,4 +68,4 @@ Subsequent deploys are automatic: push to `main` → GitHub Actions builds → p
 | `BOT_IMAGE` | No | Override the GHCR image tag |
 | `POSTGRES_PASSWORD` | Yes | Postgres password (compose only) |
 
-`euphoric-tickets v0.1.0 · d3df309`
+`euphoric-tickets v0.2.0`
