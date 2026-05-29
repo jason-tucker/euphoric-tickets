@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.5.0] — 2026-05-29 — Scheduled cleanup + Discord-side admin parity
+
+### Added
+- **`src/bot/scheduledCleanup.ts` (Phase B2)** — hourly sweep that fetches every closed ticket whose host business has a non-null `delete_closed_after_days` and whose `closed_at` is older than that window, then deletes the Discord channel and nulls the four `discord_*` columns on the row. DB row + `ticket_messages` stay so transcripts survive. Wired into `src/index.ts` alongside the existing health-push timer.
+- **`/admin` slash command (Phases A0a + A0b)** — sudo-only. Two subcommand groups:
+  - `sudo grant <user>`, `sudo revoke <user>`, `sudo list` — flip `users.is_sudo`. Grant upserts the target into `users` if missing. List renders as Components V2 ephemeral.
+  - `business create slug name guild_id [kind=host] [parent_host_slug]` — inserts a host or client business. Validates slug + snowflake formats; client kind requires `parent_host_slug` resolving to an existing host. Invalidates the business resolver cache for the guild after insert.
+  - `business list` — Components V2 ephemeral split into Hosts and Clients sections.
+  - `business delete <slug>` — drops the row (cascade nukes its categories and tickets — irreversible).
+
+Settings + categories are still edited via the existing `/tickets settings` ephemeral modal — no new slash commands needed there. With this release, sudo can manage the entire system from inside Discord: create / list / delete businesses, grant sudo, configure categories, and run the ticket lifecycle.
+
+Lands euphoric-tickets#5 (scheduled cleanup), #9 (settings parity), #10 (sudo parity).
+
 ## [0.4.0] — 2026-05-29 — Bidirectional sync, DM-on-close link, unclaim+assign
 
 ### Added

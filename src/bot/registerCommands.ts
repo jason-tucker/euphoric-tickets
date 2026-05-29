@@ -2,8 +2,9 @@ import { REST, Routes } from 'discord.js'
 import { env } from '../config/env'
 import { data as panelData } from '../commands/panel'
 import { data as ticketsData } from '../commands/tickets'
+import { data as adminData } from '../commands/admin'
 
-const commands = [panelData.toJSON(), ticketsData.toJSON()]
+const commands = [panelData.toJSON(), ticketsData.toJSON(), adminData.toJSON()]
 
 const rest = new REST().setToken(env.DISCORD_BOT_TOKEN)
 

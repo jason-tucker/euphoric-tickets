@@ -5,6 +5,7 @@ import { registerReadyEvent } from './bot/events/ready'
 import { registerInteractionCreate } from './bot/events/interactionCreate'
 import { registerMessageCreate } from './bot/events/messageCreate'
 import { startHealthPush, stopHealthPush } from './bot/healthPush'
+import { startScheduledCleanup, stopScheduledCleanup } from './bot/scheduledCleanup'
 import { closeDb } from './db/client'
 import { log } from './services/logger'
 
@@ -26,6 +27,7 @@ async function gracefulShutdown(signal: NodeJS.Signals): Promise<void> {
   shuttingDown = true
   log.info(`Received ${signal} — shutting down`)
   stopHealthPush()
+  stopScheduledCleanup()
   try { await client.destroy() } catch (err) { log.warn('client.destroy failed', { err: String(err) }) }
   try { await closeDb() } catch (err) { log.warn('closeDb failed', { err: String(err) }) }
   const code = signal === 'SIGTERM' ? 143 : 0
@@ -38,6 +40,7 @@ client
   .login(env.DISCORD_BOT_TOKEN)
   .then(() => {
     startHealthPush()
+    startScheduledCleanup(client)
   })
   .catch((err) => {
     log.error('client.login failed', { err: String(err) })
