@@ -11,4 +11,4 @@
 - Docker + GHCR build pipeline (GitHub Actions), watchtower-enabled docker-compose, systemd weekly restart timer.
 - Bot management CLI at `scripts/euphoric-tickets` mirroring the otterbot/squishybot pattern.
 
-`v0.1.0 · initial`
+`v0.1.0 · d3df309`
