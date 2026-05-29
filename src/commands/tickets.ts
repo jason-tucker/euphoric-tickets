@@ -25,13 +25,20 @@ import {
 import { claimTicket, closeTicket } from '../services/ticketService'
 import { buildCloseConfirm } from '../services/ticketRenderer'
 import { getBusinessByGuildId } from '../services/businessResolver'
-import { getDiscordIdForUserId } from '../services/userResolver'
+import { getDiscordIdForUserId, getOrCreateUserByDiscordId } from '../services/userResolver'
 
 export const data = new SlashCommandBuilder()
   .setName('tickets')
   .setDescription('Ticket controls')
   .addSubcommand((sc) => sc.setName('settings').setDescription('View/edit ticket settings (sudo)'))
   .addSubcommand((sc) => sc.setName('claim').setDescription('Claim the current ticket'))
+  .addSubcommand((sc) => sc.setName('unclaim').setDescription('Release the current ticket back to the open pool'))
+  .addSubcommand((sc) =>
+    sc
+      .setName('assign')
+      .setDescription('Assign the current ticket to a staff member')
+      .addUserOption((opt) => opt.setName('user').setDescription('Staff member to assign').setRequired(true)),
+  )
   .addSubcommand((sc) => sc.setName('close').setDescription('Close the current ticket'))
   .addSubcommand((sc) =>
     sc
@@ -68,6 +75,8 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
   const sub = interaction.options.getSubcommand(true)
   if (sub === 'settings') return await openSettings(interaction)
   if (sub === 'claim') return await claimHere(interaction)
+  if (sub === 'unclaim') return await unclaimHere(interaction)
+  if (sub === 'assign') return await assignHere(interaction)
   if (sub === 'close') return await closeHere(interaction)
   if (sub === 'add') return await addMember(interaction)
   if (sub === 'remove') return await removeMember(interaction)
@@ -147,6 +156,82 @@ async function claimHere(interaction: ChatInputCommandInteraction): Promise<void
     return
   }
   await interaction.reply({ content: `✋ Claimed by <@${member.id}>.`, allowedMentions: { parse: [] } })
+}
+
+async function unclaimHere(interaction: ChatInputCommandInteraction): Promise<void> {
+  const member = await interaction.guild!.members.fetch(interaction.user.id)
+  const staffRoles = await getStaffRoleIds(interaction.guild!.id)
+  const isStaff = staffRoles.some((id) => member.roles.cache.has(id))
+
+  const channelId = interaction.channelId
+  const rows = await db.select().from(tickets).where(eq(tickets.discordChannelId, channelId)).limit(1)
+  const ticket = rows[0]
+  if (!ticket) {
+    await interaction.reply({ content: 'This channel is not a ticket.', ephemeral: true })
+    return
+  }
+  if (ticket.status === 'closed') {
+    await interaction.reply({ content: 'This ticket is already closed.', ephemeral: true })
+    return
+  }
+
+  // Either an admin can unclaim anyone, or the current assignee can unclaim themselves.
+  const callerUserId = await getOrCreateUserByDiscordId(member.id, {
+    name: member.user.globalName ?? member.user.username,
+    image: member.user.displayAvatarURL(),
+  })
+  const isAssignee = ticket.assigneeUserId === callerUserId
+  if (!isStaff && !isAssignee && !isSudoUser(member)) {
+    await interaction.reply({ content: 'Only staff or the current assignee can unclaim this ticket.', ephemeral: true })
+    return
+  }
+
+  await db
+    .update(tickets)
+    .set({ status: 'open', assigneeUserId: null, lastActivityAt: new Date() })
+    .where(eq(tickets.id, ticket.id))
+
+  await interaction.reply({ content: '🔓 Unclaimed — ticket is back in the open pool.', allowedMentions: { parse: [] } })
+}
+
+async function assignHere(interaction: ChatInputCommandInteraction): Promise<void> {
+  const member = await interaction.guild!.members.fetch(interaction.user.id)
+  const staffRoles = await getStaffRoleIds(interaction.guild!.id)
+  const isStaff = staffRoles.some((id) => member.roles.cache.has(id))
+  if (!isStaff && !isSudoUser(member)) {
+    await interaction.reply({ content: 'Only staff can assign tickets.', ephemeral: true })
+    return
+  }
+
+  const channelId = interaction.channelId
+  const rows = await db.select().from(tickets).where(eq(tickets.discordChannelId, channelId)).limit(1)
+  const ticket = rows[0]
+  if (!ticket) {
+    await interaction.reply({ content: 'This channel is not a ticket.', ephemeral: true })
+    return
+  }
+  if (ticket.status === 'closed') {
+    await interaction.reply({ content: 'This ticket is already closed.', ephemeral: true })
+    return
+  }
+
+  const target = interaction.options.getUser('user', true)
+  // Best-effort fetch as a guild member so we get the display avatar etc.
+  const targetMember = await interaction.guild!.members.fetch(target.id).catch(() => null)
+  const targetUserId = await getOrCreateUserByDiscordId(target.id, {
+    name: targetMember?.user.globalName ?? targetMember?.user.username ?? target.username,
+    image: targetMember?.user.displayAvatarURL() ?? target.displayAvatarURL(),
+  })
+
+  await db
+    .update(tickets)
+    .set({ status: 'claimed', assigneeUserId: targetUserId, lastActivityAt: new Date() })
+    .where(eq(tickets.id, ticket.id))
+
+  await interaction.reply({
+    content: `🪪 Assigned to <@${target.id}>.`,
+    allowedMentions: { users: [target.id] },
+  })
 }
 
 async function closeHere(interaction: ChatInputCommandInteraction): Promise<void> {

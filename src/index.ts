@@ -3,12 +3,14 @@ import { env } from './config/env'
 import { client } from './bot/client'
 import { registerReadyEvent } from './bot/events/ready'
 import { registerInteractionCreate } from './bot/events/interactionCreate'
+import { registerMessageCreate } from './bot/events/messageCreate'
 import { startHealthPush, stopHealthPush } from './bot/healthPush'
 import { closeDb } from './db/client'
 import { log } from './services/logger'
 
 registerReadyEvent(client)
 registerInteractionCreate(client)
+registerMessageCreate(client)
 
 process.on('unhandledRejection', (reason) => {
   log.error('Unhandled rejection', { reason: String(reason) })

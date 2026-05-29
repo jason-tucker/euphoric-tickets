@@ -7,6 +7,7 @@ import {
   type TextChannel,
 } from 'discord.js'
 import { and, desc, eq } from 'drizzle-orm'
+import { env } from '../config/env'
 import { db } from '../db/client'
 import { tickets, type Ticket } from '../db/schema/tickets'
 import { ticketCategories } from '../db/schema/ticketCategories'
@@ -274,13 +275,18 @@ export async function closeTicket(opts: {
       const dmFile = new AttachmentBuilder(buf, {
         name: `ticket-${ticket.id}-${channel.name}.html`,
       })
+      // Resolve the host business slug for the web link. Best-effort: if
+      // the guild isn't tied to a business row, omit the link.
+      const business = await getBusinessByGuildId(guild.id)
+      const webLink = business
+        ? `${env.WEB_BASE_URL}/b/${business.slug}/tickets/${ticket.id}`
+        : null
+      const content =
+        `Your ticket **#${ticket.id}** in **${guild.name}** was closed by ${closer.user.tag}.` +
+        (webLink ? `\n\nView the conversation on the web: ${webLink}` : '') +
+        '\n\nA full transcript is attached.'
       await opener
-        .send({
-          content:
-            `Your ticket **#${ticket.id}** in **${guild.name}** was closed by ${closer.user.tag}. ` +
-            `A full transcript is attached.`,
-          files: [dmFile],
-        })
+        .send({ content, files: [dmFile] })
         .catch((err) => {
           log.info('Opener DM failed (likely DMs closed)', {
             ticketId: ticket.id,

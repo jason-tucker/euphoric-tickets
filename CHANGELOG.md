@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.4.0] — 2026-05-29 — Bidirectional sync, DM-on-close link, unclaim+assign
+
+### Added
+- **Bidirectional message sync (Phase A3)** — `src/bot/events/messageCreate.ts` registers a `MESSAGE_CREATE` listener. For every message in a channel that maps to a `tickets.discord_channel_id`, the bot inserts a `ticket_messages` row with `source='discord'`, dedupes by `discord_message_id`, upserts the author into `users`, and bumps `tickets.last_activity_at`. Skips bot messages, webhook posts (those are the web's own outbound), and DMs. Web ticket view now shows Discord-side replies live.
+- **Close DM web link (Phase A4)** — `closeTicket()` now resolves the host business from the guild and appends `https://tickets.euphoric.fm/b/<slug>/tickets/<id>` to the opener DM so they can keep reading the conversation on the web after the channel goes away. Link omitted gracefully if the guild has no business row. New env: `WEB_BASE_URL` (defaults to `https://tickets.euphoric.fm`).
+- **`/tickets unclaim`** — releases the current ticket back to the open pool, clears `assigneeUserId`. Allowed for staff, sudo, OR the current assignee (so anyone holding a ticket can hand it off themselves).
+- **`/tickets assign <user>`** — staff-only. Sets `status='claimed'` + `assigneeUserId` for the chosen Discord member. Upserts the target user into the shared `users` table if they don't have a row yet.
+
+### Changed
+- `src/config/env.ts`: added `WEB_BASE_URL` to the schema (URL, default `https://tickets.euphoric.fm`). Treated as optional in `.env` so existing `.env` files keep working.
+
+Closes web-side parity gap on euphoric-tickets#11 (claim/unclaim/assign) and lands euphoric-tickets#3, #4.
+
 ## [0.3.0] — 2026-05-29 — Bot rewire onto shared DB (Phase A1+A2)
 
 ### Changed

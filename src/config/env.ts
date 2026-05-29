@@ -11,6 +11,7 @@ for (const key of [
   'SUDO_ROLE_IDS',
   'SUDO_USER_IDS',
   'BOT_OWNER_ID',
+  'WEB_BASE_URL',
 ]) {
   if (process.env[key] === '') delete process.env[key]
 }
@@ -37,6 +38,9 @@ const envSchema = z.object({
   SUDO_USER_IDS: csvSnowflakes,
   BOT_OWNER_ID: z.string().regex(SNOWFLAKE_RE, 'must be a Discord snowflake').optional(),
   UPTIME_KUMA_PUSH_URL: z.string().url().optional(),
+  // Public URL of the web companion app — used for the "view in web" link
+  // in close-ticket DMs and elsewhere. Defaults to the production host.
+  WEB_BASE_URL: z.string().url().default('https://tickets.euphoric.fm'),
 })
 
 const parsed = envSchema.safeParse(process.env)
