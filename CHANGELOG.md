@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.5.8] — 2026-05-30 — /tickets convert + attachment capture
+
+### Added
+- **`/tickets convert`** (admin-only) — registers the current text channel as a ticket and imports recent history. Options: `category` (key, optional), `subject` (optional), `opener` (user, optional → defaults to the invoker). Guards: server must be a configured team; channel must not already be a ticket. Best-effort creates a per-channel webhook so the web can post user-spoofed replies, backfills up to 100 messages, and posts a silent `-# Channel converted to ticket #N by @x` footer. Replies with the web link.
+- **`src/services/messageBackfill.ts`** — `extractAttachments(msg)` + `backfillChannelMessages(channel, ticketId, opts)`. Skips bot/webhook/system messages, dedupes by `discord_message_id`, preserves original timestamps, and captures attachments. Reused by the P11 startup resync later.
+
+### Changed
+- The `messageCreate` relay now captures `msg.attachments` into `ticket_messages.attachments` so audio/files shared in a ticket channel surface on the web.
+
+Closes euphoric-tickets#32.
+
 ## [0.5.7] — 2026-05-30 — Bot replies say "team" not "business"
 
 ### Changed
@@ -146,4 +157,4 @@ Risks: bot now refuses to operate in any guild without a `businesses` row; trans
 - Docker + GHCR build pipeline (GitHub Actions), watchtower-enabled docker-compose, systemd weekly restart timer.
 - Bot management CLI at `scripts/euphoric-tickets` mirroring the otterbot/squishybot pattern.
 
-`v0.5.7 · 203a7ee`
+`v0.5.8 · pending`

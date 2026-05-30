@@ -3,6 +3,7 @@ import { eq, or, sql } from 'drizzle-orm'
 import { db } from '../../db/client'
 import { tickets, ticketMessages } from '../../db/schema'
 import { getOrCreateUserByDiscordId } from '../../services/userResolver'
+import { extractAttachments } from '../../services/messageBackfill'
 import { log } from '../../services/logger'
 
 // Phase A3 + #N internal-note sync — bidirectional relay. For every
@@ -61,12 +62,15 @@ async function handleMessage(msg: Message): Promise<void> {
     image: msg.author.displayAvatarURL(),
   })
 
+  const attachments = extractAttachments(msg)
+
   await db.insert(ticketMessages).values({
     ticketId: row.id,
     authorUserId,
-    body: msg.content.length > 0 ? msg.content : '(no text)',
+    body: msg.content.length > 0 ? msg.content : attachments.length > 0 ? '(attachment)' : '(no text)',
     source: isInternal ? 'internal' : 'discord',
     discordMessageId: msg.id,
+    attachments,
   })
 
   await db

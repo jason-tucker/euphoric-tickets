@@ -2,6 +2,7 @@ import {
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
+  ChannelType,
   ChatInputCommandInteraction,
   ContainerBuilder,
   MessageFlags,
@@ -27,9 +28,15 @@ import { claimTicket, closeTicket } from '../services/ticketService'
 import { buildCloseConfirm } from '../services/ticketRenderer'
 import { getBusinessByGuildId } from '../services/businessResolver'
 import { getDiscordIdForUserId, getOrCreateUserByDiscordId } from '../services/userResolver'
-import { resolveTicketAccessByChannel, type TicketAccess } from '../services/permissions'
+import {
+  isAdminForBusiness,
+  resolveTicketAccessByChannel,
+  type TicketAccess,
+} from '../services/permissions'
 import { log } from '../services/logger'
 import { postTicketStatus } from '../services/ticketStatus'
+import { backfillChannelMessages } from '../services/messageBackfill'
+import { env } from '../config/env'
 
 export const data = new SlashCommandBuilder()
   .setName('tickets')
@@ -74,6 +81,20 @@ export const data = new SlashCommandBuilder()
       .setName('delete')
       .setDescription('Delete the current ticket channel (admin only; ticket must be closed)'),
   )
+  .addSubcommand((sc) =>
+    sc
+      .setName('convert')
+      .setDescription('Convert this channel into a ticket and import recent messages (admin)')
+      .addStringOption((opt) =>
+        opt.setName('category').setDescription('Ticket category key (optional)').setRequired(false),
+      )
+      .addStringOption((opt) =>
+        opt.setName('subject').setDescription('Ticket subject (optional)').setRequired(false).setMaxLength(120),
+      )
+      .addUserOption((opt) =>
+        opt.setName('opener').setDescription('Who opened this (optional; defaults to you)').setRequired(false),
+      ),
+  )
   .setDMPermission(false)
 
 export async function execute(interaction: ChatInputCommandInteraction): Promise<void> {
@@ -92,6 +113,111 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
   if (sub === 'rename') return await renameTicket(interaction)
   if (sub === 'list') return await listTickets(interaction)
   if (sub === 'delete') return await deleteHere(interaction)
+  if (sub === 'convert') return await convertHere(interaction)
+}
+
+// Admin-only: register an existing normal channel as a ticket and import its
+// recent history (messages + attachments). The channel keeps its name; ticket
+// identity is by discord_channel_id. Best-effort creates a webhook so the web
+// can post user-spoofed replies into the channel.
+async function convertHere(interaction: ChatInputCommandInteraction): Promise<void> {
+  const member = await interaction.guild!.members.fetch(interaction.user.id)
+  const business = await getBusinessByGuildId(interaction.guild!.id)
+  if (!business) {
+    await interaction.reply({
+      content:
+        'This server is not configured as a team — ask an admin to create one at https://tickets.euphoric.fm/admin.',
+      ephemeral: true,
+    })
+    return
+  }
+  if (!isAdminForBusiness(member, business)) {
+    await interaction.reply({ content: 'Only admins can convert a channel into a ticket.', ephemeral: true })
+    return
+  }
+
+  const channel = interaction.channel as TextChannel | null
+  if (!channel || channel.type !== ChannelType.GuildText) {
+    await interaction.reply({ content: 'Run this in the text channel you want to convert.', ephemeral: true })
+    return
+  }
+
+  const [existing] = await db
+    .select({ id: tickets.id })
+    .from(tickets)
+    .where(eq(tickets.discordChannelId, channel.id))
+    .limit(1)
+  if (existing) {
+    await interaction.reply({ content: `This channel is already ticket #${existing.id}.`, ephemeral: true })
+    return
+  }
+
+  await interaction.deferReply({ ephemeral: true })
+
+  // Optional category by key.
+  const catKey = interaction.options.getString('category')?.trim().toLowerCase() || null
+  let categoryId: string | null = null
+  if (catKey) {
+    const [cat] = await db
+      .select({ id: ticketCategories.id })
+      .from(ticketCategories)
+      .where(and(eq(ticketCategories.businessId, business.id), eq(ticketCategories.key, catKey)))
+      .limit(1)
+    if (!cat) {
+      await interaction.editReply(`Unknown category \`${catKey}\`. Leave it blank or use an existing key.`)
+      return
+    }
+    categoryId = cat.id
+  }
+
+  // Opener: provided user or the invoker.
+  const openerUser = interaction.options.getUser('opener') ?? interaction.user
+  const openerMember = await interaction.guild!.members.fetch(openerUser.id).catch(() => null)
+  const openerUserId = await getOrCreateUserByDiscordId(openerUser.id, {
+    name: openerMember?.user.globalName ?? openerUser.globalName ?? openerUser.username,
+    image: (openerMember?.user ?? openerUser).displayAvatarURL(),
+  })
+
+  const subject = (interaction.options.getString('subject')?.trim() || `Converted: #${channel.name}`).slice(0, 120)
+
+  const [row] = await db
+    .insert(tickets)
+    .values({
+      businessId: business.id,
+      openerUserId,
+      categoryId,
+      subject,
+      status: 'open',
+      discordChannelId: channel.id,
+      lastActivityAt: new Date(),
+    })
+    .returning()
+
+  // Best-effort webhook so the web can post user-spoofed replies here.
+  try {
+    const wh = await channel.createWebhook({ name: `ticket-${row.id}` })
+    await db
+      .update(tickets)
+      .set({ discordWebhookId: wh.id, discordWebhookUrl: wh.url })
+      .where(eq(tickets.id, row.id))
+  } catch (err) {
+    log.warn('convert: webhook create failed (web replies will use fallback)', {
+      ticketId: row.id,
+      err: String(err),
+    })
+  }
+
+  const imported = await backfillChannelMessages(channel, row.id, { limit: 100 }).catch((err) => {
+    log.warn('convert: backfill failed', { ticketId: row.id, err: String(err) })
+    return 0
+  })
+
+  await postTicketStatus(channel, `Channel converted to ticket #${row.id} by <@${member.id}>`)
+
+  const webUrl = `${env.WEB_BASE_URL}/b/${business.slug}/tickets/${row.id}`
+  await interaction.editReply(
+    `✓ Converted to **ticket #${row.id}** — imported ${imported} message${imported === 1 ? '' : 's'}.\n${webUrl}`,
+  )
 }
 
 // Shared shape for ticket-scoped commands. Looks up the business + ticket by
