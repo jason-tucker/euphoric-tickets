@@ -19,6 +19,7 @@ import { logTicketEvent } from './ticketLogger'
 import { log } from './logger'
 import { canOpenCategory, staffRoleIdsForCategory } from './permissions'
 import { postTicketStatus } from './ticketStatus'
+import { dispatchNotify } from './notifyBridge'
 
 type ResolvedBusiness = NonNullable<Awaited<ReturnType<typeof getBusinessByGuildId>>>
 
@@ -207,6 +208,21 @@ export async function openTicket(opts: {
       Category: cat.label,
       Channel: `<#${channel.id}>`,
     },
+  })
+
+  // P13: notify staff who opted into new tickets in this team/category.
+  const openerUserIdForNotify = await getOrCreateUserByDiscordId(opener.id, {
+    name: opener.user.globalName ?? opener.user.username,
+    image: opener.user.displayAvatarURL(),
+  })
+  dispatchNotify({
+    event: 'new_ticket',
+    businessId: business.id,
+    categoryId: cat.id,
+    ticketId: row.id,
+    subject,
+    slug: business.slug,
+    actorUserId: openerUserIdForNotify,
   })
 
   return { ok: true, channel, ticket: row }

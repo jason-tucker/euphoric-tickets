@@ -4,6 +4,8 @@ import { db } from '../../db/client'
 import { tickets, ticketMessages } from '../../db/schema'
 import { getOrCreateUserByDiscordId } from '../../services/userResolver'
 import { extractAttachments } from '../../services/messageBackfill'
+import { getBusinessByGuildId } from '../../services/businessResolver'
+import { dispatchNotify } from '../../services/notifyBridge'
 import { log } from '../../services/logger'
 
 // Phase A3 + #N internal-note sync — bidirectional relay. For every
@@ -36,6 +38,9 @@ async function handleMessage(msg: Message): Promise<void> {
       id: tickets.id,
       mainChannelId: tickets.discordChannelId,
       internalThreadId: tickets.discordInternalThreadId,
+      businessId: tickets.businessId,
+      categoryId: tickets.categoryId,
+      subject: tickets.subject,
     })
     .from(tickets)
     .where(
@@ -77,4 +82,21 @@ async function handleMessage(msg: Message): Promise<void> {
     .update(tickets)
     .set({ lastActivityAt: sql`now()` })
     .where(eq(tickets.id, row.id))
+
+  // P13: notify the ticket's opener/assignee of a Discord-origin reply.
+  // Internal-thread messages never notify (they're staff-private).
+  if (!isInternal) {
+    const business = await getBusinessByGuildId(msg.guildId)
+    if (business) {
+      dispatchNotify({
+        event: 'reply',
+        businessId: row.businessId,
+        categoryId: row.categoryId,
+        ticketId: row.id,
+        subject: row.subject,
+        slug: business.slug,
+        actorUserId: authorUserId,
+      })
+    }
+  }
 }

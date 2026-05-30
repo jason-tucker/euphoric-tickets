@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.13] — 2026-05-30 — Lantern P13: notifications (bot side)
+
+### Added
+- **`src/bot/internalHttp.ts`** — tiny internal HTTP server (`INTERNAL_PORT`, default 8787) exposing `POST /api/internal/dm` (authed by `INTERNAL_TOKEN`) so the web dispatcher can DM through the bot. Disabled when no token is set.
+- **`src/services/notifyBridge.ts`** — `dispatchNotify()` POSTs to the web's `/api/internal/notify` after a Discord-origin new ticket (`openTicket`) or reply (relay). Internal-thread messages never notify.
+- New env: `INTERNAL_TOKEN`, `INTERNAL_PORT`. `user_notification_prefs` schema mirrored.
+
 ## [0.5.12] — 2026-05-30 — Lantern P12: persistent error log (bot)
 
 ### Added
@@ -198,4 +205,4 @@ Risks: bot now refuses to operate in any guild without a `businesses` row; trans
 - Docker + GHCR build pipeline (GitHub Actions), watchtower-enabled docker-compose, systemd weekly restart timer.
 - Bot management CLI at `scripts/euphoric-tickets` mirroring the otterbot/squishybot pattern.
 
-`v0.5.12 · 17a8f69`
+`v0.5.13 · pending`

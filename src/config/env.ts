@@ -12,6 +12,7 @@ for (const key of [
   'SUDO_USER_IDS',
   'BOT_OWNER_ID',
   'WEB_BASE_URL',
+  'INTERNAL_TOKEN',
 ]) {
   if (process.env[key] === '') delete process.env[key]
 }
@@ -41,6 +42,12 @@ const envSchema = z.object({
   // Public URL of the web companion app — used for the "view in web" link
   // in close-ticket DMs and elsewhere. Defaults to the production host.
   WEB_BASE_URL: z.string().url().default('https://tickets.euphoric.fm'),
+  // P13: shared secret authenticating the web ↔ bot internal endpoints
+  // (web → bot DM dispatch, bot → web notify dispatch). Optional: when unset,
+  // those endpoints are disabled and notifications degrade gracefully.
+  INTERNAL_TOKEN: z.string().min(8).optional(),
+  // Port the bot's tiny internal HTTP server binds (DM dispatch). Default 8787.
+  INTERNAL_PORT: z.coerce.number().int().positive().default(8787),
 })
 
 const parsed = envSchema.safeParse(process.env)

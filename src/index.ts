@@ -6,6 +6,7 @@ import { registerInteractionCreate } from './bot/events/interactionCreate'
 import { registerMessageCreate } from './bot/events/messageCreate'
 import { startHealthPush, stopHealthPush } from './bot/healthPush'
 import { startScheduledCleanup, stopScheduledCleanup } from './bot/scheduledCleanup'
+import { startInternalHttp } from './bot/internalHttp'
 import { closeDb } from './db/client'
 import { log } from './services/logger'
 
@@ -41,6 +42,7 @@ client
   .then(() => {
     startHealthPush()
     startScheduledCleanup(client)
+    startInternalHttp(client)
   })
   .catch((err) => {
     log.error('client.login failed', { err: String(err) })
