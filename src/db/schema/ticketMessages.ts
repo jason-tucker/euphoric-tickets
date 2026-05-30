@@ -1,4 +1,4 @@
-import { index, integer, pgTable, text, timestamp, uuid } from 'drizzle-orm/pg-core'
+import { index, integer, jsonb, pgTable, text, timestamp, uuid } from 'drizzle-orm/pg-core'
 import { tickets } from './tickets'
 import { users } from './users'
 
@@ -6,6 +6,15 @@ import { users } from './users'
 // in a Discord thread off the main ticket channel.
 export const messageSources = ['web', 'discord', 'system', 'internal'] as const
 export type MessageSource = (typeof messageSources)[number]
+
+// Captured Discord attachment. Mirror of the web's MessageAttachment.
+export type MessageAttachment = {
+  id: string
+  name: string
+  url: string
+  contentType: string | null
+  size: number
+}
 
 export const ticketMessages = pgTable(
   'ticket_messages',

@@ -1,15 +1,16 @@
 import { integer, jsonb, pgTable, text, timestamp, uuid } from 'drizzle-orm/pg-core'
 
-// Mirrored from euphoric-tickets-web. One row per tenant; a business is
-// uniquely tied to a Discord guild.
+// Mirrored from euphoric-tickets-web. One row per tenant. Multiple
+// businesses MAY share a Discord guild (slug stays unique; guild id does
+// not). The bot still resolves one business per guild for ticket-opening.
 export const businesses = pgTable('businesses', {
   id: uuid('id').primaryKey().defaultRandom(),
   slug: text('slug').notNull().unique(),
   name: text('name').notNull(),
   description: text('description'),
 
-  // The Discord guild this business lives in. One business per guild.
-  discordGuildId: text('discord_guild_id').notNull().unique(),
+  // The Discord guild this business lives in. NOT unique — see web mirror.
+  discordGuildId: text('discord_guild_id').notNull(),
 
   // Comma-separated snowflakes (we keep it as text + parse on read so the
   // settings UI can post a single CSV form value).

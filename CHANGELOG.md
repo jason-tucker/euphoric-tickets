@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.5.6] — 2026-05-30 — Schema mirror: multi-business per guild + attachments
+
+### Changed
+- Dropped the unique constraint on `businesses.discord_guild_id` (mirror of web v0.6.7) — a guild can host multiple businesses. The bot still resolves one business per guild for ticket-opening via `getBusinessByGuildId`.
+
+### Added
+- `ticket_messages.attachments` jsonb column (mirror) — groundwork for capturing Discord attachments (audio/files) so the web can play them. Populated by the relay + the upcoming `/tickets convert` backfill.
+
 ## [0.5.5] — 2026-05-29 — Silent lifecycle status footers
 
 ### Added
@@ -133,4 +141,4 @@ Risks: bot now refuses to operate in any guild without a `businesses` row; trans
 - Docker + GHCR build pipeline (GitHub Actions), watchtower-enabled docker-compose, systemd weekly restart timer.
 - Bot management CLI at `scripts/euphoric-tickets` mirroring the otterbot/squishybot pattern.
 
-`v0.5.5 · cdf2da0`
+`v0.5.6 · pending`
