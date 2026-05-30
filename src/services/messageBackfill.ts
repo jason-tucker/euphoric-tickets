@@ -33,29 +33,34 @@ export async function backfillChannelMessages(
   // Oldest → newest so insertion order matches the conversation.
   const ordered = [...fetched.values()].sort((a, b) => a.createdTimestamp - b.createdTimestamp)
 
-  let inserted = 0
+  // Perf: one dedup query for the whole batch instead of a SELECT per message
+  // (was N+1 — felt on /tickets convert and the startup resync).
+  const existing = await db
+    .select({ d: ticketMessages.discordMessageId })
+    .from(ticketMessages)
+    .where(eq(ticketMessages.ticketId, ticketId))
+  const seen = new Set(existing.map((e) => e.d).filter(Boolean) as string[])
+
+  // Collect rows then bulk-insert once. Author resolution is per-process
+  // cached, so repeated authors don't re-hit the DB.
+  const rows: (typeof ticketMessages.$inferInsert)[] = []
   for (const msg of ordered) {
     if (msg.system) continue
     if (msg.webhookId) continue
     if (msg.author.id === channel.client.user?.id) continue
+    if (seen.has(msg.id)) continue
 
     const content = msg.content ?? ''
     const attachments = extractAttachments(msg)
     if (content.length === 0 && attachments.length === 0) continue
-
-    const [dup] = await db
-      .select({ id: ticketMessages.id })
-      .from(ticketMessages)
-      .where(eq(ticketMessages.discordMessageId, msg.id))
-      .limit(1)
-    if (dup) continue
+    seen.add(msg.id)
 
     const authorUserId = await getOrCreateUserByDiscordId(msg.author.id, {
       name: msg.author.globalName ?? msg.author.username,
       image: msg.author.displayAvatarURL(),
     })
 
-    await db.insert(ticketMessages).values({
+    rows.push({
       ticketId,
       authorUserId,
       body: content.length > 0 ? content : '(attachment)',
@@ -64,7 +69,8 @@ export async function backfillChannelMessages(
       attachments,
       createdAt: msg.createdAt,
     })
-    inserted++
   }
-  return inserted
+
+  if (rows.length > 0) await db.insert(ticketMessages).values(rows)
+  return rows.length
 }

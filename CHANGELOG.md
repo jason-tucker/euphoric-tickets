@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.5.17] — 2026-05-30 — Perf pass: kill N+1s in backfill + resync
+
+### Changed
+- **`backfillChannelMessages`** — was `SELECT … WHERE discord_message_id = ?` once **per message** (N+1, felt on `/tickets convert` and the startup resync). Now: one batch dedup query per ticket + a single bulk `INSERT` for all new rows.
+- **`startupResync`** — the open-ticket pass now runs in bounded-concurrency batches of 5 instead of strictly serial, so a large backlog no longer makes boot crawl (stays under Discord rate limits).
+
+No behavior change — purely fewer queries / round-trips.
+
 ## [0.5.16] — 2026-05-30 — Lantern P18: single-leader bot (advisory lock)
 
 ### Added
@@ -220,4 +228,4 @@ Risks: bot now refuses to operate in any guild without a `businesses` row; trans
 - Docker + GHCR build pipeline (GitHub Actions), watchtower-enabled docker-compose, systemd weekly restart timer.
 - Bot management CLI at `scripts/euphoric-tickets` mirroring the otterbot/squishybot pattern.
 
-`v0.5.16 · 959ed4f`
+`v0.5.17 · pending`

@@ -27,7 +27,11 @@ export async function runStartupResync(client: Client): Promise<void> {
     .from(tickets)
     .where(and(ne(tickets.status, 'closed'), isNotNull(tickets.discordChannelId)))
 
-  for (const t of openTickets) {
+  // Perf: process tickets in bounded-concurrency batches instead of strictly
+  // serial — keeps a big backlog from making boot crawl, while the batch size
+  // stays well under Discord's rate limits.
+  const CONCURRENCY = 5
+  const processTicket = async (t: (typeof openTickets)[number]): Promise<void> => {
     const channelId = t.discordChannelId!
     const channel = await client.channels.fetch(channelId).catch(() => null)
 
@@ -41,9 +45,9 @@ export async function runStartupResync(client: Client): Promise<void> {
       persistError('warn', 'startup-resync', 'orphaned ticket channel', {
         context: { ticketId: t.id, channelId },
       })
-      continue
+      return
     }
-    if (channel.type !== ChannelType.GuildText) continue
+    if (channel.type !== ChannelType.GuildText) return
 
     // Pass 3 — backfill messages posted while the bot was offline. The
     // backfill helper dedupes by discord_message_id, so re-running is safe.
@@ -53,6 +57,10 @@ export async function runStartupResync(client: Client): Promise<void> {
     } catch (err) {
       log.warn('startup resync: backfill failed', { ticketId: t.id, err: String(err) })
     }
+  }
+
+  for (let i = 0; i < openTickets.length; i += CONCURRENCY) {
+    await Promise.all(openTickets.slice(i, i + CONCURRENCY).map(processTicket))
   }
 
   // ---- Pass 2: panel reconcile --------------------------------------------
