@@ -1,7 +1,7 @@
 import type { Client } from 'discord.js'
 import { and, eq, isNotNull, sql } from 'drizzle-orm'
 import { db } from '../db/client'
-import { tickets, businesses } from '../db/schema'
+import { tickets, businesses, botErrors } from '../db/schema'
 import { log } from '../services/logger'
 
 // Phase B2 — scheduled cleanup of closed tickets whose Discord channels
@@ -31,6 +31,14 @@ export function stopScheduledCleanup(): void {
 }
 
 async function sweep(client: Client): Promise<void> {
+  // P12: drop persisted errors older than 5 days. Independent of the channel
+  // cleanup below so one failing doesn't skip the other.
+  try {
+    await db.delete(botErrors).where(sql`${botErrors.createdAt} < now() - interval '5 days'`)
+  } catch (err) {
+    log.warn('bot_errors retention sweep failed', { err: String(err) })
+  }
+
   try {
     // Pull every closed ticket with a still-attached channel and a
     // configured horizon on its host business. The `delete_closed_after_days

@@ -4,7 +4,7 @@ import { db } from '../db/client'
 import { tickets } from '../db/schema/tickets'
 import { ticketPanels } from '../db/schema/ticketPanels'
 import { backfillChannelMessages } from '../services/messageBackfill'
-import { log } from '../services/logger'
+import { log, persistError } from '../services/logger'
 
 // P11 (lantern) — reconcile DB ↔ Discord on connect and backfill anything the
 // bot missed while it was down. Three idempotent passes, all best-effort so a
@@ -38,7 +38,9 @@ export async function runStartupResync(client: Client): Promise<void> {
         .set({ needsAttention: true, discordChannelId: null, discordWebhookId: null, discordWebhookUrl: null })
         .where(eq(tickets.id, t.id))
       orphans++
-      log.warn('startup resync: orphaned ticket channel', { ticketId: t.id, channelId })
+      persistError('warn', 'startup-resync', 'orphaned ticket channel', {
+        context: { ticketId: t.id, channelId },
+      })
       continue
     }
     if (channel.type !== ChannelType.GuildText) continue
@@ -66,9 +68,8 @@ export async function runStartupResync(client: Client): Promise<void> {
     const msg = await (channel as TextChannel).messages.fetch(p.messageId).catch(() => null)
     if (!msg) {
       missingPanels++
-      log.warn('startup resync: panel message missing (re-run /panel post)', {
-        channelId: p.channelId,
-        messageId: p.messageId,
+      persistError('warn', 'startup-resync', 'panel message missing (re-run /panel post)', {
+        context: { channelId: p.channelId, messageId: p.messageId },
       })
     }
   }

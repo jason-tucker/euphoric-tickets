@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.5.12] — 2026-05-30 — Lantern P12: persistent error log (bot)
+
+### Added
+- **`persistError(level, source, message, { stack, context })`** in `services/logger.ts` — logs to stdout AND inserts a row into `bot_errors` (best-effort, fire-and-forget; a DB failure never masks the original error). Lazy imports avoid a startup cycle.
+- **`bot_errors` table** (schema mirrored from web): `id bigserial, level, source, message, stack, context jsonb, created_at` + index on `created_at`.
+- **5-day retention sweep** in `scheduledCleanup.ts` — `DELETE FROM bot_errors WHERE created_at < now() - interval '5 days'`, runs alongside the hourly closed-channel cleanup.
+- Startup-resync orphan + missing-panel warnings now route through `persistError` so they surface on the web's `/admin/errors`.
+
+Closes euphoric-tickets#17.
+
 ## [0.5.11] — 2026-05-30 — Lantern P11: startup resync
 
 ### Added
@@ -188,4 +198,4 @@ Risks: bot now refuses to operate in any guild without a `businesses` row; trans
 - Docker + GHCR build pipeline (GitHub Actions), watchtower-enabled docker-compose, systemd weekly restart timer.
 - Bot management CLI at `scripts/euphoric-tickets` mirroring the otterbot/squishybot pattern.
 
-`v0.5.11 · f98aac5`
+`v0.5.12 · pending`
