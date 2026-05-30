@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.5.14] — 2026-05-30 — Lantern P14: bot DM gateway
+
+### Added
+- The bot now **responds to DMs** instead of dropping them. A user who messages the bot directly gets a one-time (10-min cooldown) explainer: DMs don't reach staff — open a ticket from the server panel or on the web. Added the `DirectMessages` gateway intent.
+
 ## [0.5.13] — 2026-05-30 — Lantern P13: notifications (bot side)
 
 ### Added
@@ -205,4 +210,4 @@ Risks: bot now refuses to operate in any guild without a `businesses` row; trans
 - Docker + GHCR build pipeline (GitHub Actions), watchtower-enabled docker-compose, systemd weekly restart timer.
 - Bot management CLI at `scripts/euphoric-tickets` mirroring the otterbot/squishybot pattern.
 
-`v0.5.13 · 4c74b3e`
+`v0.5.14 · pending`

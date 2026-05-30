@@ -7,6 +7,7 @@ import { extractAttachments } from '../../services/messageBackfill'
 import { getBusinessByGuildId } from '../../services/businessResolver'
 import { dispatchNotify } from '../../services/notifyBridge'
 import { log } from '../../services/logger'
+import { env } from '../../config/env'
 
 // Phase A3 + #N internal-note sync — bidirectional relay. For every
 // MESSAGE_CREATE in a channel that maps to a ticket row (main channel OR
@@ -21,8 +22,38 @@ export function registerMessageCreate(client: Client): void {
   })
 }
 
+// P14: DM gateway — guide users who message the bot directly. Cooldown so a
+// chatty user gets the explainer at most once every 10 minutes.
+const dmCooldown = new Map<string, number>()
+const DM_COOLDOWN_MS = 10 * 60 * 1000
+
+async function handleDmGateway(msg: Message): Promise<void> {
+  const last = dmCooldown.get(msg.author.id) ?? 0
+  if (Date.now() - last < DM_COOLDOWN_MS) return
+  dmCooldown.set(msg.author.id, Date.now())
+
+  await msg
+    .reply({
+      content:
+        "👋 I don't handle DMs — messages here don't reach any staff.\n\n" +
+        '**For support**, open a ticket from the ticket panel in your server, ' +
+        `or on the web: ${env.WEB_BASE_URL}\n\n` +
+        '**For questions about the bot itself**, open a ticket in your server and pick the ' +
+        'bot/help category if one exists.',
+      allowedMentions: { parse: [] },
+    })
+    .catch(() => {})
+}
+
 async function handleMessage(msg: Message): Promise<void> {
-  if (msg.system || !msg.guildId) return
+  if (msg.system) return
+
+  // DM (no guild): run the gateway instead of dropping silently.
+  if (!msg.guildId) {
+    if (msg.author.bot || msg.author.id === msg.client.user.id) return
+    await handleDmGateway(msg)
+    return
+  }
 
   // Skip our own outbound webhook posts (the web's user-spoofed replies).
   if (msg.webhookId) return
