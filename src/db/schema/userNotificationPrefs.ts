@@ -26,6 +26,8 @@ export const userNotificationPrefs = pgTable(
     enabled: boolean('enabled').notNull().default(true),
     // ntfy topic to POST to (per user). Ignored for the 'dm' channel.
     ntfyTopic: text('ntfy_topic'),
+    // Optional custom ntfy server. Null/empty → default (NTFY_BASE_URL/ntfy.sh).
+    ntfyServer: text('ntfy_server'),
   },
   (t) => ({ byUser: index('user_notification_prefs_user_idx').on(t.userId) }),
 )

@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.5.21] — 2026-05-30 — Mirror: ntfy custom server column
+
+### Added
+- `user_notification_prefs.ntfy_server` column (mirror of web) — optional per-user custom ntfy server. No bot behavior change.
+
 ## [0.5.20] — 2026-05-30 — Internal endpoints fall back to the bot token
 
 ### Changed
@@ -243,4 +248,4 @@ Risks: bot now refuses to operate in any guild without a `businesses` row; trans
 - Docker + GHCR build pipeline (GitHub Actions), watchtower-enabled docker-compose, systemd weekly restart timer.
 - Bot management CLI at `scripts/euphoric-tickets` mirroring the otterbot/squishybot pattern.
 
-`v0.5.20 · 2086361`
+`v0.5.21 · pending`
