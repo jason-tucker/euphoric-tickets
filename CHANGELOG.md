@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.5.15] — 2026-05-30 — Lantern P16 mirror: ticket_external_members
+
+### Added
+- `ticket_external_members` schema mirror (web-owned) — groundwork for adding Discord users who aren't in the guild to a ticket. No bot behavior change.
+
 ## [0.5.14] — 2026-05-30 — Lantern P14: bot DM gateway
 
 ### Added
@@ -210,4 +215,4 @@ Risks: bot now refuses to operate in any guild without a `businesses` row; trans
 - Docker + GHCR build pipeline (GitHub Actions), watchtower-enabled docker-compose, systemd weekly restart timer.
 - Bot management CLI at `scripts/euphoric-tickets` mirroring the otterbot/squishybot pattern.
 
-`v0.5.14 · 6ce381b`
+`v0.5.15 · pending`
