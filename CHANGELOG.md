@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.5.22] — 2026-05-30 — More statuses; claim/assign set In Progress
+
+### Changed
+- `ticketStatuses` enum gains **in_progress, on_hold, completed** (alongside open/waiting/closed; legacy 'claimed' kept for old rows). Mirror of web.
+- Claiming or assigning a ticket now sets status **in_progress** (was 'claimed').
+
 ## [0.5.21] — 2026-05-30 — Mirror: ntfy custom server column
 
 ### Added
@@ -248,4 +254,4 @@ Risks: bot now refuses to operate in any guild without a `businesses` row; trans
 - Docker + GHCR build pipeline (GitHub Actions), watchtower-enabled docker-compose, systemd weekly restart timer.
 - Bot management CLI at `scripts/euphoric-tickets` mirroring the otterbot/squishybot pattern.
 
-`v0.5.21 · 11acdea`
+`v0.5.22 · pending`

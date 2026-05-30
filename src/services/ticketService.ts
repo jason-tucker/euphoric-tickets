@@ -251,7 +251,7 @@ export async function claimTicket(opts: {
 
   const [updated] = await db
     .update(tickets)
-    .set({ status: 'claimed', assigneeUserId: claimerUserId, lastActivityAt: new Date() })
+    .set({ status: 'in_progress', assigneeUserId: claimerUserId, lastActivityAt: new Date() })
     .where(eq(tickets.id, ticket.id))
     .returning()
 

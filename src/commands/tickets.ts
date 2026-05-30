@@ -420,7 +420,7 @@ async function assignHere(interaction: ChatInputCommandInteraction): Promise<voi
 
   await db
     .update(tickets)
-    .set({ status: 'claimed', assigneeUserId: targetUserId, lastActivityAt: new Date() })
+    .set({ status: 'in_progress', assigneeUserId: targetUserId, lastActivityAt: new Date() })
     .where(eq(tickets.id, ticket.id))
 
   const channel = interaction.channel as TextChannel | null

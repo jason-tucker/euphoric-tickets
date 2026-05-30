@@ -6,7 +6,15 @@ import { users } from './users'
 // Mirrored from euphoric-tickets-web. Discord IDs are stored on `users`
 // (not here) — `openerUserId` / `assigneeUserId` / `closedByUserId` are
 // FK uuids and need a join through `users` to recover the snowflake.
-export const ticketStatuses = ['open', 'claimed', 'waiting', 'closed'] as const
+export const ticketStatuses = [
+  'open',
+  'claimed',
+  'in_progress',
+  'waiting',
+  'on_hold',
+  'completed',
+  'closed',
+] as const
 export type TicketStatus = (typeof ticketStatuses)[number]
 
 export const ticketKinds = ['normal', 'project'] as const
