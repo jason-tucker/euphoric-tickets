@@ -17,6 +17,7 @@ import { buildTicketWelcome } from './ticketRenderer'
 import { fetchAllMessages, renderTranscriptHtml } from './transcriptService'
 import { logTicketEvent } from './ticketLogger'
 import { log } from './logger'
+import { canOpenCategory, staffRoleIdsForCategory } from './permissions'
 
 export type OpenResult =
   | { ok: true; channel: TextChannel; ticket: Ticket }
@@ -47,6 +48,14 @@ export async function openTicket(opts: {
   const cat = catRows[0]
   if (!cat) return { ok: false, reason: 'Unknown ticket category. The panel may be out of date.' }
 
+  // P2: per-category open-gate. Empty allow_role_ids = anyone may open.
+  if (!canOpenCategory(opener, business, cat)) {
+    return {
+      ok: false,
+      reason: `You don't have access to open a **${cat.label}** ticket. Ask an admin if you think you should.`,
+    }
+  }
+
   const parentCategoryId = cat.discordParentCategoryId ?? business.discordFallbackCategoryId
   if (!parentCategoryId) {
     return {
@@ -64,9 +73,10 @@ export async function openTicket(opts: {
     }
   }
 
-  const staffRoleIds = business.adminRoleIds
-    ? business.adminRoleIds.split(',').map((s) => s.trim()).filter(Boolean)
-    : []
+  // P2: per-category override wins; falls back to businesses.admin_role_ids
+  // when the category has none. Drives the channel ACLs below + the
+  // welcome card's staff @ ping.
+  const staffRoleIds = staffRoleIdsForCategory(business, cat)
 
   const openerUserId = await getOrCreateUserByDiscordId(opener.id, {
     name: opener.user.globalName ?? opener.user.username,

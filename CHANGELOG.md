@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.5.4] — 2026-05-29 — Lantern P2: per-category gates + /tickets delete
+
+### Added — Phase P2 of the lantern plan
+- **`src/services/permissions.ts`** — new module with the three-tier helpers (`parseCsv`, `staffRoleIdsForCategory`, `isAdminForBusiness`, `isStaffForCategory`, `canOpenCategory`, `resolveTicketAccess`, `resolveTicketAccessByChannel`). One DB round-trip per resolution; sudo + guild ADMINISTRATOR + business admin roles all map to admin tier.
+- **`/tickets delete` slash subcommand** — admin-only hard-delete of a closed ticket's Discord channel. Mirrors the web's Delete button. Refuses on still-open tickets so the close-transcript path always runs once. Nulls the `discord_*` columns the same way `scheduledCleanup.ts` does.
+
+### Changed
+- **`openTicket` (`ticketService.ts`)** now refuses panel-button clicks for members whose roles don't intersect `category.allow_role_ids` (when set; empty = anyone), and uses `staffRoleIdsForCategory(business, cat)` for the channel permission overwrites. Per-category override → falls back to `businesses.admin_role_ids` when unset. Existing categories with empty `staff_role_ids` keep the prior behavior.
+- **`tickets.ts` command handlers** refactored to share a `loadCtx(interaction)` helper that does business lookup → ticket lookup → per-category access flags. `claim`, `unclaim`, `assign`, `close`, `add`, `remove`, `rename` all now gate via the new flags (`canClaim`, `canClose`, `canManageMembers`). Sudo + admin behavior preserved; category staff is a new tier strictly between opener and admin.
+
+### Behavior change
+- Members holding a role only in a category's `staff_role_ids` (not on `businesses.admin_role_ids`) can now run `/tickets claim|unclaim|assign|close|add|remove|rename` on tickets in that category. They cannot run `/tickets delete` — that stays admin-only.
+
+Closes euphoric-tickets#13.
+
 ## [0.5.3] — 2026-05-29 — Lantern P1: mirror new ticket_categories columns
 
 ### Changed
@@ -100,4 +115,4 @@ Risks: bot now refuses to operate in any guild without a `businesses` row; trans
 - Docker + GHCR build pipeline (GitHub Actions), watchtower-enabled docker-compose, systemd weekly restart timer.
 - Bot management CLI at `scripts/euphoric-tickets` mirroring the otterbot/squishybot pattern.
 
-`v0.5.3 · 5ca5fa9`
+`v0.5.4 · pending`

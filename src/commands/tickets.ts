@@ -9,12 +9,13 @@ import {
   SeparatorSpacingSize,
   SlashCommandBuilder,
   TextDisplayBuilder,
+  type GuildMember,
   type TextChannel,
 } from 'discord.js'
 import { logTicketEvent } from '../services/ticketLogger'
 import { and, asc, eq, ne } from 'drizzle-orm'
 import { db } from '../db/client'
-import { tickets } from '../db/schema/tickets'
+import { tickets, type Ticket } from '../db/schema/tickets'
 import { ticketCategories } from '../db/schema/ticketCategories'
 import { isSudoUser } from '../services/sudoService'
 import {
@@ -26,6 +27,8 @@ import { claimTicket, closeTicket } from '../services/ticketService'
 import { buildCloseConfirm } from '../services/ticketRenderer'
 import { getBusinessByGuildId } from '../services/businessResolver'
 import { getDiscordIdForUserId, getOrCreateUserByDiscordId } from '../services/userResolver'
+import { resolveTicketAccessByChannel, type TicketAccess } from '../services/permissions'
+import { log } from '../services/logger'
 
 export const data = new SlashCommandBuilder()
   .setName('tickets')
@@ -65,6 +68,11 @@ export const data = new SlashCommandBuilder()
       ),
   )
   .addSubcommand((sc) => sc.setName('list').setDescription('List open tickets (staff)'))
+  .addSubcommand((sc) =>
+    sc
+      .setName('delete')
+      .setDescription('Delete the current ticket channel (admin only; ticket must be closed)'),
+  )
   .setDMPermission(false)
 
 export async function execute(interaction: ChatInputCommandInteraction): Promise<void> {
@@ -82,6 +90,39 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
   if (sub === 'remove') return await removeMember(interaction)
   if (sub === 'rename') return await renameTicket(interaction)
   if (sub === 'list') return await listTickets(interaction)
+  if (sub === 'delete') return await deleteHere(interaction)
+}
+
+// Shared shape for ticket-scoped commands. Looks up the business + ticket by
+// channel id and the caller's per-category access. Replies ephemerally on any
+// failure and returns null so the handler can early-out.
+async function loadCtx(
+  interaction: ChatInputCommandInteraction,
+): Promise<
+  | {
+      member: GuildMember
+      business: NonNullable<Awaited<ReturnType<typeof getBusinessByGuildId>>>
+      ticket: Ticket
+      access: TicketAccess
+    }
+  | null
+> {
+  const member = await interaction.guild!.members.fetch(interaction.user.id)
+  const business = await getBusinessByGuildId(interaction.guild!.id)
+  if (!business) {
+    await interaction.reply({
+      content:
+        'This server is not configured as a business — ask an admin to create one at https://tickets.euphoric.fm/admin.',
+      ephemeral: true,
+    })
+    return null
+  }
+  const res = await resolveTicketAccessByChannel(member, business, interaction.channelId)
+  if (!res) {
+    await interaction.reply({ content: 'This channel is not a ticket.', ephemeral: true })
+    return null
+  }
+  return { member, business, ticket: res.ticket, access: res.access }
 }
 
 async function openSettings(interaction: ChatInputCommandInteraction): Promise<void> {
@@ -134,54 +175,37 @@ async function openSettings(interaction: ChatInputCommandInteraction): Promise<v
 }
 
 async function claimHere(interaction: ChatInputCommandInteraction): Promise<void> {
-  const member = await interaction.guild!.members.fetch(interaction.user.id)
-  const staffRoles = await getStaffRoleIds(interaction.guild!.id)
-  const isStaff = staffRoles.some((id) => member.roles.cache.has(id))
-  if (!isStaff && !isSudoUser(member)) {
+  const ctx = await loadCtx(interaction)
+  if (!ctx) return
+  if (!ctx.access.canClaim) {
     await interaction.reply({ content: 'Only staff can claim tickets.', ephemeral: true })
     return
   }
 
-  const channelId = interaction.channelId
-  const rows = await db.select().from(tickets).where(eq(tickets.discordChannelId, channelId)).limit(1)
-  const ticket = rows[0]
-  if (!ticket) {
-    await interaction.reply({ content: 'This channel is not a ticket.', ephemeral: true })
-    return
-  }
-
-  const result = await claimTicket({ ticket, claimer: member })
+  const result = await claimTicket({ ticket: ctx.ticket, claimer: ctx.member })
   if (!result.ok) {
     await interaction.reply({ content: result.reason, ephemeral: true })
     return
   }
-  await interaction.reply({ content: `✋ Claimed by <@${member.id}>.`, allowedMentions: { parse: [] } })
+  await interaction.reply({ content: `✋ Claimed by <@${ctx.member.id}>.`, allowedMentions: { parse: [] } })
 }
 
 async function unclaimHere(interaction: ChatInputCommandInteraction): Promise<void> {
-  const member = await interaction.guild!.members.fetch(interaction.user.id)
-  const staffRoles = await getStaffRoleIds(interaction.guild!.id)
-  const isStaff = staffRoles.some((id) => member.roles.cache.has(id))
-
-  const channelId = interaction.channelId
-  const rows = await db.select().from(tickets).where(eq(tickets.discordChannelId, channelId)).limit(1)
-  const ticket = rows[0]
-  if (!ticket) {
-    await interaction.reply({ content: 'This channel is not a ticket.', ephemeral: true })
-    return
-  }
+  const ctx = await loadCtx(interaction)
+  if (!ctx) return
+  const { ticket, member, access } = ctx
   if (ticket.status === 'closed') {
     await interaction.reply({ content: 'This ticket is already closed.', ephemeral: true })
     return
   }
 
-  // Either an admin can unclaim anyone, or the current assignee can unclaim themselves.
+  // Staff can unclaim anyone; the current assignee can always unclaim themselves.
   const callerUserId = await getOrCreateUserByDiscordId(member.id, {
     name: member.user.globalName ?? member.user.username,
     image: member.user.displayAvatarURL(),
   })
   const isAssignee = ticket.assigneeUserId === callerUserId
-  if (!isStaff && !isAssignee && !isSudoUser(member)) {
+  if (!access.isStaff && !isAssignee) {
     await interaction.reply({ content: 'Only staff or the current assignee can unclaim this ticket.', ephemeral: true })
     return
   }
@@ -195,21 +219,13 @@ async function unclaimHere(interaction: ChatInputCommandInteraction): Promise<vo
 }
 
 async function assignHere(interaction: ChatInputCommandInteraction): Promise<void> {
-  const member = await interaction.guild!.members.fetch(interaction.user.id)
-  const staffRoles = await getStaffRoleIds(interaction.guild!.id)
-  const isStaff = staffRoles.some((id) => member.roles.cache.has(id))
-  if (!isStaff && !isSudoUser(member)) {
+  const ctx = await loadCtx(interaction)
+  if (!ctx) return
+  if (!ctx.access.canClaim) {
     await interaction.reply({ content: 'Only staff can assign tickets.', ephemeral: true })
     return
   }
-
-  const channelId = interaction.channelId
-  const rows = await db.select().from(tickets).where(eq(tickets.discordChannelId, channelId)).limit(1)
-  const ticket = rows[0]
-  if (!ticket) {
-    await interaction.reply({ content: 'This channel is not a ticket.', ephemeral: true })
-    return
-  }
+  const { ticket } = ctx
   if (ticket.status === 'closed') {
     await interaction.reply({ content: 'This ticket is already closed.', ephemeral: true })
     return
@@ -235,51 +251,32 @@ async function assignHere(interaction: ChatInputCommandInteraction): Promise<voi
 }
 
 async function closeHere(interaction: ChatInputCommandInteraction): Promise<void> {
-  const member = await interaction.guild!.members.fetch(interaction.user.id)
-  const channelId = interaction.channelId
-  const rows = await db.select().from(tickets).where(eq(tickets.discordChannelId, channelId)).limit(1)
-  const ticket = rows[0]
-  if (!ticket) {
-    await interaction.reply({ content: 'This channel is not a ticket.', ephemeral: true })
-    return
-  }
-
-  const staffRoles = await getStaffRoleIds(interaction.guild!.id)
-  const isStaff = staffRoles.some((id) => member.roles.cache.has(id))
-  const openerDiscordId = await getDiscordIdForUserId(ticket.openerUserId)
-  const isOpener = openerDiscordId === member.id
-  if (!isStaff && !isOpener && !isSudoUser(member)) {
+  const ctx = await loadCtx(interaction)
+  if (!ctx) return
+  if (!ctx.access.canClose) {
     await interaction.reply({ content: 'Only the opener or staff can close this ticket.', ephemeral: true })
     return
   }
 
   await interaction.reply({
-    ...(buildCloseConfirm(ticket.id) as any),
+    ...(buildCloseConfirm(ctx.ticket.id) as any),
   })
 }
 
 async function addMember(interaction: ChatInputCommandInteraction): Promise<void> {
-  const member = await interaction.guild!.members.fetch(interaction.user.id)
-  const staffRoles = await getStaffRoleIds(interaction.guild!.id)
-  const isStaff = staffRoles.some((id) => member.roles.cache.has(id))
-  if (!isStaff && !isSudoUser(member)) {
+  const ctx = await loadCtx(interaction)
+  if (!ctx) return
+  if (!ctx.access.canManageMembers) {
     await interaction.reply({ content: 'Only staff can add members to a ticket.', ephemeral: true })
     return
   }
-
-  const target = interaction.options.getUser('user', true)
-  const channelId = interaction.channelId
-  const rows = await db.select().from(tickets).where(eq(tickets.discordChannelId, channelId)).limit(1)
-  const ticket = rows[0]
-  if (!ticket) {
-    await interaction.reply({ content: 'This channel is not a ticket.', ephemeral: true })
-    return
-  }
+  const { ticket, member } = ctx
   if (ticket.status === 'closed') {
     await interaction.reply({ content: 'This ticket is already closed.', ephemeral: true })
     return
   }
 
+  const target = interaction.options.getUser('user', true)
   const channel = interaction.channel as TextChannel | null
   if (!channel) {
     await interaction.reply({ content: 'Channel context missing.', ephemeral: true })
@@ -309,26 +306,19 @@ async function addMember(interaction: ChatInputCommandInteraction): Promise<void
 }
 
 async function removeMember(interaction: ChatInputCommandInteraction): Promise<void> {
-  const member = await interaction.guild!.members.fetch(interaction.user.id)
-  const staffRoles = await getStaffRoleIds(interaction.guild!.id)
-  const isStaff = staffRoles.some((id) => member.roles.cache.has(id))
-  if (!isStaff && !isSudoUser(member)) {
+  const ctx = await loadCtx(interaction)
+  if (!ctx) return
+  if (!ctx.access.canManageMembers) {
     await interaction.reply({ content: 'Only staff can remove members from a ticket.', ephemeral: true })
     return
   }
-
-  const target = interaction.options.getUser('user', true)
-  const channelId = interaction.channelId
-  const rows = await db.select().from(tickets).where(eq(tickets.discordChannelId, channelId)).limit(1)
-  const ticket = rows[0]
-  if (!ticket) {
-    await interaction.reply({ content: 'This channel is not a ticket.', ephemeral: true })
-    return
-  }
+  const { ticket, member } = ctx
   if (ticket.status === 'closed') {
     await interaction.reply({ content: 'This ticket is already closed.', ephemeral: true })
     return
   }
+
+  const target = interaction.options.getUser('user', true)
   const openerDiscordId = await getDiscordIdForUserId(ticket.openerUserId)
   if (target.id === openerDiscordId) {
     await interaction.reply({ content: 'Cannot remove the ticket opener — close the ticket instead.', ephemeral: true })
@@ -432,21 +422,13 @@ async function listTickets(interaction: ChatInputCommandInteraction): Promise<vo
 }
 
 async function renameTicket(interaction: ChatInputCommandInteraction): Promise<void> {
-  const member = await interaction.guild!.members.fetch(interaction.user.id)
-  const staffRoles = await getStaffRoleIds(interaction.guild!.id)
-  const isStaff = staffRoles.some((id) => member.roles.cache.has(id))
-  if (!isStaff && !isSudoUser(member)) {
+  const ctx = await loadCtx(interaction)
+  if (!ctx) return
+  if (!ctx.access.canManageMembers) {
     await interaction.reply({ content: 'Only staff can rename tickets.', ephemeral: true })
     return
   }
-
-  const channelId = interaction.channelId
-  const rows = await db.select().from(tickets).where(eq(tickets.discordChannelId, channelId)).limit(1)
-  const ticket = rows[0]
-  if (!ticket) {
-    await interaction.reply({ content: 'This channel is not a ticket.', ephemeral: true })
-    return
-  }
+  const { ticket, member } = ctx
   if (ticket.status === 'closed') {
     await interaction.reply({ content: 'This ticket is already closed.', ephemeral: true })
     return
@@ -482,6 +464,52 @@ async function renameTicket(interaction: ChatInputCommandInteraction): Promise<v
       Channel: `<#${channel.id}>`,
     },
   })
+}
+
+// P2: admin-only hard-delete of a closed ticket's Discord channel. Mirrors
+// the web's "Delete channel" button. Refuses on still-open tickets so the
+// transcript path runs once via close → delete-after-close.
+async function deleteHere(interaction: ChatInputCommandInteraction): Promise<void> {
+  const ctx = await loadCtx(interaction)
+  if (!ctx) return
+  if (!ctx.access.canDelete) {
+    await interaction.reply({ content: 'Only admins can delete a ticket channel.', ephemeral: true })
+    return
+  }
+  if (ctx.ticket.status !== 'closed') {
+    await interaction.reply({
+      content: 'Close this ticket first — `/tickets close` — then re-run `/tickets delete` to remove the channel.',
+      ephemeral: true,
+    })
+    return
+  }
+
+  const channel = interaction.channel as TextChannel | null
+  if (!channel) {
+    await interaction.reply({ content: 'Channel context missing.', ephemeral: true })
+    return
+  }
+
+  await interaction
+    .reply({ content: `🗑️ Deleting channel for ticket #${ctx.ticket.id}…`, ephemeral: true })
+    .catch(() => {})
+
+  // Null the discord_* columns so /admin/errors + the web don't keep
+  // re-checking a channel that's already gone. Match the bot scheduled
+  // cleanup pattern from v0.5.0.
+  await db
+    .update(tickets)
+    .set({
+      discordChannelId: null,
+      discordWebhookId: null,
+      discordWebhookUrl: null,
+      discordInternalThreadId: null,
+    })
+    .where(eq(tickets.id, ctx.ticket.id))
+
+  await channel
+    .delete(`Ticket #${ctx.ticket.id} hard-deleted by ${ctx.member.user.tag}`)
+    .catch((err) => log.warn('Channel delete failed', { ticketId: ctx.ticket.id, err: String(err) }))
 }
 
 export async function executeCloseConfirm(opts: {
