@@ -13,12 +13,12 @@ export function dispatchNotify(payload: {
   slug: string
   actorUserId?: string | null
 }): void {
-  if (!env.INTERNAL_TOKEN) return
+  const secret = env.INTERNAL_TOKEN ?? env.DISCORD_BOT_TOKEN
   void (async () => {
     try {
       await fetch(`${env.WEB_BASE_URL}/api/internal/notify`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-internal-token': env.INTERNAL_TOKEN as string },
+        headers: { 'Content-Type': 'application/json', 'x-internal-token': secret },
         body: JSON.stringify(payload),
       })
     } catch (err) {

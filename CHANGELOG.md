@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.5.20] — 2026-05-30 — Internal endpoints fall back to the bot token
+
+### Changed
+- The web↔bot internal endpoints (`/api/internal/dm`, notify bridge) now authenticate with `INTERNAL_TOKEN` **if set, else the bot token** both services already share. So Discord-DM notifications work with no extra secret to configure — the internal HTTP server always starts (using the bot token) instead of staying disabled.
+
 ## [0.5.19] — 2026-05-30 — Fix: build was broken (missing attachments column)
 
 ### Fixed
@@ -238,4 +243,4 @@ Risks: bot now refuses to operate in any guild without a `businesses` row; trans
 - Docker + GHCR build pipeline (GitHub Actions), watchtower-enabled docker-compose, systemd weekly restart timer.
 - Bot management CLI at `scripts/euphoric-tickets` mirroring the otterbot/squishybot pattern.
 
-`v0.5.19 · 2dcd14d`
+`v0.5.20 · pending`

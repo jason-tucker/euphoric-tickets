@@ -8,18 +8,22 @@ import { log } from '../services/logger'
 // (the bot holds the gateway connection). Authed by the shared INTERNAL_TOKEN.
 // Bound on INTERNAL_PORT — keep it on the private docker network, never
 // publish it to the host.
+// The internal endpoints authenticate with INTERNAL_TOKEN if set, otherwise
+// they fall back to the bot token (which both services already share) — so
+// notifications/DM work with no extra config out of the box.
+function internalSecret(): string {
+  return env.INTERNAL_TOKEN ?? env.DISCORD_BOT_TOKEN
+}
+
 export function startInternalHttp(client: Client): void {
-  if (!env.INTERNAL_TOKEN) {
-    log.info('internal HTTP disabled (no INTERNAL_TOKEN set)')
-    return
-  }
+  const secret = internalSecret()
 
   const server = http.createServer((req, res) => {
     if (req.method !== 'POST' || req.url !== '/api/internal/dm') {
       res.writeHead(404).end()
       return
     }
-    if (req.headers['x-internal-token'] !== env.INTERNAL_TOKEN) {
+    if (req.headers['x-internal-token'] !== secret) {
       res.writeHead(401).end()
       return
     }
