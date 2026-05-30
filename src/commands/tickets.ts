@@ -113,7 +113,7 @@ async function loadCtx(
   if (!business) {
     await interaction.reply({
       content:
-        'This server is not configured as a business — ask an admin to create one at https://tickets.euphoric.fm/admin.',
+        'This server is not configured as a team — ask an admin to create one at https://tickets.euphoric.fm/admin.',
       ephemeral: true,
     })
     return null
@@ -372,7 +372,7 @@ async function listTickets(interaction: ChatInputCommandInteraction): Promise<vo
   const business = await getBusinessByGuildId(interaction.guild!.id)
   if (!business) {
     await interaction.editReply(
-      'This server is not configured as a business — create one at https://tickets.euphoric.fm/admin.',
+      'This server is not configured as a team — create one at https://tickets.euphoric.fm/admin.',
     )
     return
   }

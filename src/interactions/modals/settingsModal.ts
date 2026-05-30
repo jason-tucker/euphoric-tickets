@@ -25,7 +25,7 @@ export async function handleSettingsModalSubmit(interaction: ModalSubmitInteract
   const business = await getBusinessByGuildId(interaction.guild.id)
   if (!business) {
     await interaction.editReply(
-      'This server is not configured as a business — create one at https://tickets.euphoric.fm/admin.',
+      'This server is not configured as a team — create one at https://tickets.euphoric.fm/admin.',
     )
     return
   }

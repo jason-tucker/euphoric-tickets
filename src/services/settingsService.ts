@@ -100,7 +100,7 @@ export async function replaceTicketCategories(
   if (!biz) {
     return {
       ok: false,
-      reason: 'This server is not configured as a business — create one at https://tickets.euphoric.fm/admin.',
+      reason: 'This server is not configured as a team — create one at https://tickets.euphoric.fm/admin.',
     }
   }
   await db.transaction(async (tx) => {

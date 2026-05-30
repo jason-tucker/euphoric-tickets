@@ -25,7 +25,7 @@ export type OpenResult =
   | { ok: false; reason: string }
 
 const NOT_CONFIGURED =
-  'This server is not configured as a business — ask an admin to create one at https://tickets.euphoric.fm/admin.'
+  'This server is not configured as a team — ask an admin to create one at https://tickets.euphoric.fm/admin.'
 
 function truncate(s: string, n: number): string {
   return s.length > n ? s.slice(0, n - 1) + '…' : s

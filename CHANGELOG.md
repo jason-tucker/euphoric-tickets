@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.5.7] — 2026-05-30 — Bot replies say "team" not "business"
+
+### Changed
+- The bot's "This server is not configured as a …" replies now say **team** instead of **business**, matching the web UI rename (web v0.6.8). Display-string only — no schema or identifier change.
+
 ## [0.5.6] — 2026-05-30 — Schema mirror: multi-business per guild + attachments
 
 ### Changed
@@ -141,4 +146,4 @@ Risks: bot now refuses to operate in any guild without a `businesses` row; trans
 - Docker + GHCR build pipeline (GitHub Actions), watchtower-enabled docker-compose, systemd weekly restart timer.
 - Bot management CLI at `scripts/euphoric-tickets` mirroring the otterbot/squishybot pattern.
 
-`v0.5.6 · 6d356a2`
+`v0.5.7 · pending`
