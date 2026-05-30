@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.5.2] — 2026-05-29 — Internal-note thread sync
+
+### Fixed
+- `src/bot/events/messageCreate.ts` now matches inbound messages against both `tickets.discord_channel_id` AND `tickets.discord_internal_thread_id`, so staff replies typed directly in the per-ticket private internal thread are relayed into `ticket_messages` with `source='internal'` (and only the main channel maps to `source='discord'`). Dedupe by `discord_message_id` unchanged. The bot creates the thread via the web's `createPrivateThread` call (bot token), so it's auto-joined and receives `MESSAGE_CREATE` in the private thread. Closes euphoric-tickets#12.
+
 ## [0.5.1] — 2026-05-29
 
 ### Added
@@ -88,4 +93,4 @@ Risks: bot now refuses to operate in any guild without a `businesses` row; trans
 - Docker + GHCR build pipeline (GitHub Actions), watchtower-enabled docker-compose, systemd weekly restart timer.
 - Bot management CLI at `scripts/euphoric-tickets` mirroring the otterbot/squishybot pattern.
 
-`v0.5.1 · 1735989`
+`v0.5.2 · pending`
