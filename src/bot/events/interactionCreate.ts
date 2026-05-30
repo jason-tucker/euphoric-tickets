@@ -10,6 +10,10 @@ import {
   handleTicketCloseConfirm,
 } from '../../interactions/buttons/ticketClose'
 import { handleSettingsButton } from '../../interactions/buttons/settingsButton'
+import {
+  handleChangeCategoryButton,
+  handleChangeCategorySelect,
+} from '../../interactions/buttons/ticketChangeCategory'
 import { handleSettingsModalSubmit } from '../../interactions/modals/settingsModal'
 import { log } from '../../services/logger'
 
@@ -33,7 +37,14 @@ export function registerInteractionCreate(client: Client): void {
         }
         if (id.startsWith('tk:close_cancel:')) return await handleTicketCloseCancel(interaction)
         if (id.startsWith('tk:close:')) return await handleTicketClose(interaction)
+        if (id.startsWith('tk:changecat:')) return await handleChangeCategoryButton(interaction)
         if (id.startsWith('tk:settings:')) return await handleSettingsButton(interaction)
+        return
+      }
+
+      if (interaction.isStringSelectMenu()) {
+        const id = interaction.customId
+        if (id.startsWith('tk:changecat_sel:')) return await handleChangeCategorySelect(interaction)
         return
       }
 

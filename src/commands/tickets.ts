@@ -24,7 +24,7 @@ import {
   getPanelCategories,
   getStaffRoleIds,
 } from '../services/settingsService'
-import { claimTicket, closeTicket } from '../services/ticketService'
+import { changeTicketCategory, claimTicket, closeTicket } from '../services/ticketService'
 import { buildCloseConfirm } from '../services/ticketRenderer'
 import { getBusinessByGuildId } from '../services/businessResolver'
 import { getDiscordIdForUserId, getOrCreateUserByDiscordId } from '../services/userResolver'
@@ -83,6 +83,14 @@ export const data = new SlashCommandBuilder()
   )
   .addSubcommand((sc) =>
     sc
+      .setName('category')
+      .setDescription("Change this ticket's category (admin)")
+      .addStringOption((opt) =>
+        opt.setName('key').setDescription('Category key to move this ticket to').setRequired(true),
+      ),
+  )
+  .addSubcommand((sc) =>
+    sc
       .setName('convert')
       .setDescription('Convert this channel into a ticket and import recent messages (admin)')
       .addStringOption((opt) =>
@@ -114,6 +122,47 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
   if (sub === 'list') return await listTickets(interaction)
   if (sub === 'delete') return await deleteHere(interaction)
   if (sub === 'convert') return await convertHere(interaction)
+  if (sub === 'category') return await changeCategoryHere(interaction)
+}
+
+// Admin-only: move the current ticket to a different category.
+async function changeCategoryHere(interaction: ChatInputCommandInteraction): Promise<void> {
+  const ctx = await loadCtx(interaction)
+  if (!ctx) return
+  if (!ctx.access.canChangeCategory) {
+    await interaction.reply({ content: "Only admins can change a ticket's category.", ephemeral: true })
+    return
+  }
+
+  const key = interaction.options.getString('key', true).trim().toLowerCase()
+  const [cat] = await db
+    .select()
+    .from(ticketCategories)
+    .where(and(eq(ticketCategories.businessId, ctx.business.id), eq(ticketCategories.key, key)))
+    .limit(1)
+  if (!cat) {
+    await interaction.reply({ content: `Unknown category \`${key}\`.`, ephemeral: true })
+    return
+  }
+
+  const channel = interaction.channel as TextChannel | null
+  if (!channel) {
+    await interaction.reply({ content: 'Channel context missing.', ephemeral: true })
+    return
+  }
+
+  await interaction.deferReply({ ephemeral: true })
+  const result = await changeTicketCategory({
+    guild: interaction.guild!,
+    channel,
+    ticket: ctx.ticket,
+    newCategory: cat,
+    business: ctx.business,
+    actorId: ctx.member.id,
+  })
+  await interaction.editReply(
+    result.ok ? `✓ Moved to ${cat.emoji ? `${cat.emoji} ` : ''}**${cat.label}**.` : result.reason,
+  )
 }
 
 // Admin-only: register an existing normal channel as a ticket and import its

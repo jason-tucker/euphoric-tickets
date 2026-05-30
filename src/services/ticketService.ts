@@ -10,7 +10,7 @@ import { and, desc, eq } from 'drizzle-orm'
 import { env } from '../config/env'
 import { db } from '../db/client'
 import { tickets, type Ticket } from '../db/schema/tickets'
-import { ticketCategories } from '../db/schema/ticketCategories'
+import { ticketCategories, type TicketCategory } from '../db/schema/ticketCategories'
 import { getBusinessByGuildId } from './businessResolver'
 import { getOrCreateUserByDiscordId, getDiscordIdForUserId } from './userResolver'
 import { buildTicketWelcome, renderFirstMessage } from './ticketRenderer'
@@ -19,6 +19,8 @@ import { logTicketEvent } from './ticketLogger'
 import { log } from './logger'
 import { canOpenCategory, staffRoleIdsForCategory } from './permissions'
 import { postTicketStatus } from './ticketStatus'
+
+type ResolvedBusiness = NonNullable<Awaited<ReturnType<typeof getBusinessByGuildId>>>
 
 export type OpenResult =
   | { ok: true; channel: TextChannel; ticket: Ticket }
@@ -257,6 +259,61 @@ export async function claimTicket(opts: {
   })
 
   return { ok: true, updated }
+}
+
+// P5: move a ticket to a different category. Updates the DB, best-effort
+// moves the Discord channel under the new parent category, and grants the new
+// category's staff roles channel access (additive — existing members keep
+// theirs). Posts a silent status footer. Admin-gated by the caller.
+export async function changeTicketCategory(opts: {
+  guild: Guild
+  channel: TextChannel
+  ticket: Ticket
+  newCategory: TicketCategory
+  business: ResolvedBusiness
+  actorId: string
+}): Promise<{ ok: true } | { ok: false; reason: string }> {
+  const { guild, channel, ticket, newCategory, business, actorId } = opts
+
+  if (ticket.categoryId === newCategory.id) {
+    return { ok: false, reason: `This ticket is already in **${newCategory.label}**.` }
+  }
+
+  await db
+    .update(tickets)
+    .set({ categoryId: newCategory.id, lastActivityAt: new Date() })
+    .where(eq(tickets.id, ticket.id))
+
+  // Move the channel under the new parent (per-category → team fallback).
+  const parentId = newCategory.discordParentCategoryId ?? business.discordFallbackCategoryId ?? null
+  if (parentId) {
+    const parent = await guild.channels.fetch(parentId).catch(() => null)
+    if (parent && parent.type === ChannelType.GuildCategory) {
+      await channel.setParent(parent.id, { lockPermissions: false }).catch((err) => {
+        log.warn('changeCategory: setParent failed', { ticketId: ticket.id, err: String(err) })
+      })
+    }
+  }
+
+  // Grant the new category's staff roles (falls back to team admins).
+  const staffRoleIds = staffRoleIdsForCategory(business, newCategory)
+  for (const roleId of staffRoleIds) {
+    await channel.permissionOverwrites
+      .edit(roleId, {
+        ViewChannel: true,
+        SendMessages: true,
+        ReadMessageHistory: true,
+        AttachFiles: true,
+        EmbedLinks: true,
+        ManageMessages: true,
+      })
+      .catch((err) => log.warn('changeCategory: overwrite failed', { roleId, err: String(err) }))
+  }
+
+  const emoji = newCategory.emoji ? `${newCategory.emoji} ` : ''
+  await postTicketStatus(channel, `Ticket category changed to ${emoji}${newCategory.label} by <@${actorId}>`)
+
+  return { ok: true }
 }
 
 export async function closeTicket(opts: {

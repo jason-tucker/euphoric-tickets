@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.5.10] — 2026-05-30 — Lantern P5: change a ticket's category (bot)
+
+### Added
+- **`changeTicketCategory()` service** — updates `tickets.category_id`, best-effort moves the Discord channel under the new category's parent (per-category → team fallback), grants the new category's staff roles channel access (additive), and posts a silent `-# Ticket category changed to … by @x` footer. Refuses a no-op move.
+- **`/tickets category <key>`** — admin-only slash command to move the current ticket.
+- **"🗂️ Category" button on the welcome card** — opens an ephemeral category select (`tk:changecat:` → `tk:changecat_sel:`); both handlers enforce admin. New `interactions/buttons/ticketChangeCategory.ts`, routed in `interactionCreate` (added a `isStringSelectMenu()` branch).
+
+Closes euphoric-tickets#15.
+
 ## [0.5.9] — 2026-05-30 — Lantern P4: welcome-card redesign + custom first message
 
 ### Changed
@@ -168,4 +177,4 @@ Risks: bot now refuses to operate in any guild without a `businesses` row; trans
 - Docker + GHCR build pipeline (GitHub Actions), watchtower-enabled docker-compose, systemd weekly restart timer.
 - Bot management CLI at `scripts/euphoric-tickets` mirroring the otterbot/squishybot pattern.
 
-`v0.5.9 · 31249b4`
+`v0.5.10 · pending`

@@ -113,7 +113,14 @@ export function buildTicketWelcome(opts: {
     .setStyle(ButtonStyle.Danger)
     .setEmoji('🔒')
 
-  const row = new ActionRowBuilder<ButtonBuilder>().addComponents(claimBtn, closeBtn)
+  // P5: opens an ephemeral category select. The handler enforces admin.
+  const changeCatBtn = new ButtonBuilder()
+    .setCustomId(`tk:changecat:${ticketId}`)
+    .setLabel('Category')
+    .setStyle(ButtonStyle.Secondary)
+    .setEmoji('🗂️')
+
+  const row = new ActionRowBuilder<ButtonBuilder>().addComponents(claimBtn, closeBtn, changeCatBtn)
   if (webUrl) {
     row.addComponents(
       new ButtonBuilder()
