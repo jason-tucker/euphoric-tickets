@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.3] — 2026-05-29 — Lantern P1: mirror new ticket_categories columns
+
+### Changed
+- `src/db/schema/ticketCategories.ts` mirrored from the web side: adds `allow_role_ids` (not null default `''`), `staff_role_ids` (not null default `''`), and `first_message_template` (nullable). Drizzle-kit push picks them up on next bot deploy so the bot's writes don't fail against the new shape. No functional bot change in this release — P2 wires up the gating and P4 reads `first_message_template`.
+
+Schema lockstep with euphoric-tickets-web v0.6.3 (lantern P1).
+
 ## [0.5.2] — 2026-05-29 — Internal-note thread sync
 
 ### Fixed
@@ -93,4 +100,4 @@ Risks: bot now refuses to operate in any guild without a `businesses` row; trans
 - Docker + GHCR build pipeline (GitHub Actions), watchtower-enabled docker-compose, systemd weekly restart timer.
 - Bot management CLI at `scripts/euphoric-tickets` mirroring the otterbot/squishybot pattern.
 
-`v0.5.2 · 14e091d`
+`v0.5.3 · pending`

@@ -25,6 +25,17 @@ export const ticketCategories = pgTable(
     // to businesses.discord_closed_category_id when null.
     discordClosedCategoryId: text('discord_closed_category_id'),
 
+    // P1 (lantern): per-category permission tiers — bot + web enforce these
+    // in P2. Empty string = inherit (anyone-can-open for allow_role_ids,
+    // businesses.admin_role_ids for staff_role_ids). CSV of role snowflakes.
+    allowRoleIds: text('allow_role_ids').notNull().default(''),
+    staffRoleIds: text('staff_role_ids').notNull().default(''),
+
+    // P1 (lantern, used by P4): optional custom template the bot renders as
+    // the ticket's first message instead of the default welcome card.
+    // Supports {{user}}, {{ticketId}}, {{subject}}, {{category}} placeholders.
+    firstMessageTemplate: text('first_message_template'),
+
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({ businessKey: uniqueIndex('ticket_categories_business_key_uq').on(t.businessId, t.key) }),
