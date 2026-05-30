@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.5.19] — 2026-05-30 — Fix: build was broken (missing attachments column)
+
+### Fixed
+- `ticket_messages.attachments` column was declared as a *type* but never added to the table definition in the bot's schema mirror, so `messageCreate` + `messageBackfill` failed to compile and **every CI build since v0.5.6 failed** (nothing deployed). Added the column; `tsc` is clean. This unblocks the whole backlog of bot releases.
+
 ## [0.5.18] — 2026-05-30 — Context-aware /help
 
 ### Added
@@ -233,4 +238,4 @@ Risks: bot now refuses to operate in any guild without a `businesses` row; trans
 - Docker + GHCR build pipeline (GitHub Actions), watchtower-enabled docker-compose, systemd weekly restart timer.
 - Bot management CLI at `scripts/euphoric-tickets` mirroring the otterbot/squishybot pattern.
 
-`v0.5.18 · a324555`
+`v0.5.19 · pending`

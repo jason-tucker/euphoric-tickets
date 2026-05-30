@@ -29,6 +29,9 @@ export const ticketMessages = pgTable(
 
     discordMessageId: text('discord_message_id'),
 
+    // Captured Discord attachments (audio/files). Empty array when none.
+    attachments: jsonb('attachments').$type<MessageAttachment[]>().notNull().default([]),
+
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({
