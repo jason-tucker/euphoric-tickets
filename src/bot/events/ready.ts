@@ -8,6 +8,7 @@ import {
 } from 'discord.js'
 import { env } from '../../config/env'
 import { log } from '../../services/logger'
+import { runStartupResync } from '../startupResync'
 
 const SUPPRESS_NOTIFICATIONS = 1 << 12
 
@@ -18,6 +19,10 @@ function sep() {
 export function registerReadyEvent(client: Client): void {
   client.once('clientReady', async (c) => {
     log.info(`Logged in as ${c.user.tag}`)
+
+    // P11: reconcile DB ↔ Discord + backfill missed messages. Best-effort —
+    // never let a resync failure stop the bot from coming up.
+    void runStartupResync(c).catch((err) => log.error('startup resync threw', { err: String(err) }))
 
     if (env.BOT_OWNER_ID) {
       const owner = await c.users.fetch(env.BOT_OWNER_ID).catch(() => null)

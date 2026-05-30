@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.5.11] — 2026-05-30 — Lantern P11: startup resync
+
+### Added
+- **`src/bot/startupResync.ts`** — runs once on `clientReady` (best-effort; never blocks boot). Three idempotent passes:
+  1. **Orphan scan** — open tickets whose `discord_channel_id` no longer resolves get `needs_attention=true` and their `discord_*` columns nulled.
+  2. **Panel reconcile** — verifies each `ticket_panels` message still exists; logs a warning to re-run `/panel post` if not.
+  3. **Message backfill** — for every open ticket with a live channel, `backfillChannelMessages(…, 100)` imports anything posted while the bot was down (dedupe by `discord_message_id`).
+- **`tickets.needs_attention`** boolean column (mirrored on the web; the web shows an amber banner on flagged tickets).
+
+Closes euphoric-tickets#16.
+
 ## [0.5.10] — 2026-05-30 — Lantern P5: change a ticket's category (bot)
 
 ### Added
@@ -177,4 +188,4 @@ Risks: bot now refuses to operate in any guild without a `businesses` row; trans
 - Docker + GHCR build pipeline (GitHub Actions), watchtower-enabled docker-compose, systemd weekly restart timer.
 - Bot management CLI at `scripts/euphoric-tickets` mirroring the otterbot/squishybot pattern.
 
-`v0.5.10 · 4b9b55d`
+`v0.5.11 · pending`

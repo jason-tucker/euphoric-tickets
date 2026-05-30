@@ -1,4 +1,4 @@
-import { index, integer, pgTable, serial, text, timestamp, uuid } from 'drizzle-orm/pg-core'
+import { boolean, index, integer, pgTable, serial, text, timestamp, uuid } from 'drizzle-orm/pg-core'
 import { businesses } from './businesses'
 import { ticketCategories } from './ticketCategories'
 import { users } from './users'
@@ -44,6 +44,9 @@ export const tickets = pgTable(
     discordInternalThreadId: text('discord_internal_thread_id'),
 
     priority: integer('priority').notNull().default(2), // 1=urgent .. 4=low
+    // P11: set by the startup resync when a ticket's Discord channel has
+    // vanished out from under us, so staff can spot orphaned tickets on the web.
+    needsAttention: boolean('needs_attention').notNull().default(false),
     openedAt: timestamp('opened_at', { withTimezone: true }).notNull().defaultNow(),
     closedAt: timestamp('closed_at', { withTimezone: true }),
     closedByUserId: uuid('closed_by_user_id').references(() => users.id),
