@@ -2,6 +2,7 @@ import type { Client, Interaction } from 'discord.js'
 import { execute as executePanel, data as panelData } from '../../commands/panel'
 import { execute as executeTickets, executeCloseConfirm, data as ticketsData } from '../../commands/tickets'
 import { execute as executeAdmin, data as adminData } from '../../commands/admin'
+import { execute as executeHelp, data as helpData } from '../../commands/help'
 import { handleTicketOpen } from '../../interactions/buttons/ticketOpen'
 import { handleTicketClaim } from '../../interactions/buttons/ticketClaim'
 import {
@@ -24,6 +25,7 @@ export function registerInteractionCreate(client: Client): void {
         if (interaction.commandName === panelData.name) return await executePanel(interaction)
         if (interaction.commandName === ticketsData.name) return await executeTickets(interaction)
         if (interaction.commandName === adminData.name) return await executeAdmin(interaction)
+        if (interaction.commandName === helpData.name) return await executeHelp(interaction)
         return
       }
 

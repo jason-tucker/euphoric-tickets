@@ -3,8 +3,9 @@ import { env } from '../config/env'
 import { data as panelData } from '../commands/panel'
 import { data as ticketsData } from '../commands/tickets'
 import { data as adminData } from '../commands/admin'
+import { data as helpData } from '../commands/help'
 
-const commands = [panelData.toJSON(), ticketsData.toJSON(), adminData.toJSON()]
+const commands = [panelData.toJSON(), ticketsData.toJSON(), adminData.toJSON(), helpData.toJSON()]
 
 const rest = new REST().setToken(env.DISCORD_BOT_TOKEN)
 

@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.5.18] — 2026-05-30 — Context-aware /help
+
+### Added
+- **`/help`** — an ephemeral, context-aware guide. It resolves the caller's tier in the server (Member / Staff / Admin / Sudo — staff is checked against every category's staff roles) and shows only the commands relevant to them, a short "how it works", and a link to the full web help page (`WEB_BASE_URL/help`). Registered + routed alongside the other commands.
+
 ## [0.5.17] — 2026-05-30 — Perf pass: kill N+1s in backfill + resync
 
 ### Changed
@@ -228,4 +233,4 @@ Risks: bot now refuses to operate in any guild without a `businesses` row; trans
 - Docker + GHCR build pipeline (GitHub Actions), watchtower-enabled docker-compose, systemd weekly restart timer.
 - Bot management CLI at `scripts/euphoric-tickets` mirroring the otterbot/squishybot pattern.
 
-`v0.5.17 · 3048ee8`
+`v0.5.18 · pending`
