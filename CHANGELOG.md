@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.5.16] — 2026-05-30 — Lantern P18: single-leader bot (advisory lock)
+
+### Added
+- **`src/bot/leader.ts`** — `ensureLeadership()` blocks (polling every 30s) until this instance holds a Postgres session-level advisory lock on a dedicated connection, so when the same image runs on several VPS only ONE connects to the Discord gateway. When the leader dies its session drops, the lock releases, and a follower takes over within ~30s. `LEADER_ELECTION=off` skips the wait on single-VPS deploys. Wired into `index.ts` before `client.login()`; releases on graceful shutdown.
+
 ## [0.5.15] — 2026-05-30 — Lantern P16 mirror: ticket_external_members
 
 ### Added
@@ -215,4 +220,4 @@ Risks: bot now refuses to operate in any guild without a `businesses` row; trans
 - Docker + GHCR build pipeline (GitHub Actions), watchtower-enabled docker-compose, systemd weekly restart timer.
 - Bot management CLI at `scripts/euphoric-tickets` mirroring the otterbot/squishybot pattern.
 
-`v0.5.15 · ff62ab0`
+`v0.5.16 · pending`

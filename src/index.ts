@@ -7,6 +7,7 @@ import { registerMessageCreate } from './bot/events/messageCreate'
 import { startHealthPush, stopHealthPush } from './bot/healthPush'
 import { startScheduledCleanup, stopScheduledCleanup } from './bot/scheduledCleanup'
 import { startInternalHttp } from './bot/internalHttp'
+import { ensureLeadership, releaseLeadership } from './bot/leader'
 import { closeDb } from './db/client'
 import { log } from './services/logger'
 
@@ -30,6 +31,7 @@ async function gracefulShutdown(signal: NodeJS.Signals): Promise<void> {
   stopHealthPush()
   stopScheduledCleanup()
   try { await client.destroy() } catch (err) { log.warn('client.destroy failed', { err: String(err) }) }
+  try { await releaseLeadership() } catch (err) { log.warn('releaseLeadership failed', { err: String(err) }) }
   try { await closeDb() } catch (err) { log.warn('closeDb failed', { err: String(err) }) }
   const code = signal === 'SIGTERM' ? 143 : 0
   setTimeout(() => process.exit(code), 2_000).unref()
@@ -37,8 +39,11 @@ async function gracefulShutdown(signal: NodeJS.Signals): Promise<void> {
 process.on('SIGTERM', () => { void gracefulShutdown('SIGTERM') })
 process.on('SIGINT',  () => { void gracefulShutdown('SIGINT') })
 
-client
-  .login(env.DISCORD_BOT_TOKEN)
+// P18: become the single leader before connecting to the Discord gateway.
+// On a single-VPS deploy this returns immediately; on multi-VPS, followers
+// block here until the current leader's process dies.
+ensureLeadership()
+  .then(() => client.login(env.DISCORD_BOT_TOKEN))
   .then(() => {
     startHealthPush()
     startScheduledCleanup(client)
