@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.5.9] — 2026-05-30 — Lantern P4: welcome-card redesign + custom first message
+
+### Changed
+- **`buildTicketWelcome()` redesigned (Components V2).** Compact info header rendered as `-#` subtext (ticket #, category emoji + label, opener mention, opened-at relative timestamp, claimer when set), the **ticket reason as the dominant body**, and Claim / Close / Open-in-web buttons underneath. Dropped the noisy "Staff: @role" line from the card — staff are still pinged via the separate ping line on open.
+- **`openTicket()` reads `category.first_message_template`** (added in P1) and substitutes `{{user}}`, `{{ticketId}}`, `{{subject}}`, `{{category}}` via the new shared `renderFirstMessage()` helper. When a template is set it becomes the card's body; otherwise the default prompt is used. The card is sent with `allowedMentions: { parse: [] }` so a `{{user}}` mention renders without re-pinging the opener.
+- **Claim re-render** (`ticketClaim.ts`) now re-fetches the category emoji + template and re-renders the same first message, so claiming a ticket no longer reverts the body to the default.
+
+Admins author the template on the web team-settings category editor (shipped in web v0.6.3). The "Change category" button on the card is deferred to P5 (it shares P5's resolver).
+
+Closes euphoric-tickets#14.
+
 ## [0.5.8] — 2026-05-30 — /tickets convert + attachment capture
 
 ### Added
@@ -157,4 +168,4 @@ Risks: bot now refuses to operate in any guild without a `businesses` row; trans
 - Docker + GHCR build pipeline (GitHub Actions), watchtower-enabled docker-compose, systemd weekly restart timer.
 - Bot management CLI at `scripts/euphoric-tickets` mirroring the otterbot/squishybot pattern.
 
-`v0.5.8 · ae5ab45`
+`v0.5.9 · pending`

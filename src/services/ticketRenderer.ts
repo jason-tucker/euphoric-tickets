@@ -43,35 +43,62 @@ export function buildPanelMessage(categories: PanelCategory[]) {
   }
 }
 
+// Substitute the per-category first-message template placeholders. Shared by
+// openTicket (initial render) and the claim re-render so the body stays
+// stable when the card refreshes. `{{user}}` becomes a mention — the send
+// call uses allowedMentions parse:[] so it renders without an extra ping.
+export function renderFirstMessage(
+  template: string,
+  vars: { userId: string; ticketId: number; subject: string; category: string },
+): string {
+  return template
+    .split('{{user}}').join(`<@${vars.userId}>`)
+    .split('{{ticketId}}').join(String(vars.ticketId))
+    .split('{{subject}}').join(vars.subject)
+    .split('{{category}}').join(vars.category)
+}
+
+// P4 (lantern) welcome card. Compact info header up top (rendered as `-#`
+// subtext), the ticket reason as the dominant body (custom first-message
+// template when the category sets one, else the subject + default prompt),
+// and the control buttons underneath.
 export function buildTicketWelcome(opts: {
   ticketId: number
   openerId: string
   categoryLabel: string
+  categoryEmoji?: string | null
+  subject?: string | null
+  openedAt?: Date
   staffRoleIds: string[]
   claimerId: string | null
-  // Optional URL to the web ticket detail (D2). Rendered as a Link
-  // button alongside Claim/Close so staff and the opener can deep-link
-  // to the web companion.
+  // Rendered custom first message (already substituted). Null → default body.
+  firstMessage?: string | null
+  // Optional URL to the web ticket detail — Link button alongside Claim/Close.
   webUrl?: string | null
 }) {
-  const { ticketId, openerId, categoryLabel, staffRoleIds, claimerId, webUrl } = opts
+  const { ticketId, openerId, categoryLabel, categoryEmoji, subject, openedAt, claimerId, firstMessage, webUrl } =
+    opts
 
-  const lines: string[] = [
-    `## 🎫 Ticket #${ticketId} — ${categoryLabel}`,
-    `Opened by <@${openerId}>`,
-  ]
-  if (claimerId) lines.push(`Claimed by <@${claimerId}>`)
-  const staffMentions = staffRoleIds.map((id) => `<@&${id}>`).join(' ')
-  if (staffMentions) lines.push(`Staff: ${staffMentions}`)
+  const openedTs = Math.floor((openedAt ?? new Date()).getTime() / 1000)
+  const emoji = categoryEmoji ? `${categoryEmoji} ` : '🎫 '
+
+  // Compact header — small subtext so the body dominates.
+  const header = [
+    `-# ${emoji}**Ticket #${ticketId}** · ${categoryLabel}`,
+    `-# Opened by <@${openerId}> · <t:${openedTs}:R>${claimerId ? ` · claimed by <@${claimerId}>` : ''}`,
+  ].join('\n')
+
+  // Dominant body — custom template, else subject heading + default prompt.
+  const body =
+    firstMessage && firstMessage.trim().length > 0
+      ? firstMessage.trim()
+      : `${subject ? `### ${subject}\n` : ''}Describe your issue in this channel — staff will be with you shortly.`
 
   const container = new ContainerBuilder()
     .setAccentColor(ACCENT)
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent(lines.join('\n')))
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent(header))
     .addSeparatorComponents(sep())
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent(
-      '_Describe your issue in this channel. Staff will be with you shortly._\n' +
-      '_When the issue is resolved, anyone can press **Close** below._'
-    ))
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent(body))
 
   const claimBtn = new ButtonBuilder()
     .setCustomId(`tk:claim:${ticketId}`)

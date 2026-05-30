@@ -13,7 +13,7 @@ import { tickets, type Ticket } from '../db/schema/tickets'
 import { ticketCategories } from '../db/schema/ticketCategories'
 import { getBusinessByGuildId } from './businessResolver'
 import { getOrCreateUserByDiscordId, getDiscordIdForUserId } from './userResolver'
-import { buildTicketWelcome } from './ticketRenderer'
+import { buildTicketWelcome, renderFirstMessage } from './ticketRenderer'
 import { fetchAllMessages, renderTranscriptHtml } from './transcriptService'
 import { logTicketEvent } from './ticketLogger'
 import { log } from './logger'
@@ -162,12 +162,27 @@ export async function openTicket(opts: {
 
   await channel.setName(`ticket-${row.id}-${safeName}`).catch(() => {})
 
+  // P4: per-category custom first message (placeholders substituted), else
+  // the default body inside buildTicketWelcome.
+  const firstMessage = cat.firstMessageTemplate
+    ? renderFirstMessage(cat.firstMessageTemplate, {
+        userId: opener.id,
+        ticketId: row.id,
+        subject,
+        category: cat.label,
+      })
+    : null
+
   const welcome = buildTicketWelcome({
     ticketId: row.id,
     openerId: opener.id,
     categoryLabel: cat.label,
+    categoryEmoji: cat.emoji,
+    subject,
+    openedAt: row.openedAt,
     staffRoleIds,
     claimerId: null,
+    firstMessage,
     webUrl: `${env.WEB_BASE_URL}/b/${business.slug}/tickets/${row.id}`,
   })
 
@@ -178,7 +193,8 @@ export async function openTicket(opts: {
     content: pingContent,
     allowedMentions: { users: [opener.id], roles: staffRoleIds },
   })
-  await channel.send(welcome as any)
+  // parse:[] so the card body's {{user}} mention renders without re-pinging.
+  await channel.send({ ...(welcome as any), allowedMentions: { parse: [] } })
 
   void logTicketEvent({
     guild,
