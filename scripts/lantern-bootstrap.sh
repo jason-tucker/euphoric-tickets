@@ -23,29 +23,54 @@ BOARD_BOT=9
 BOARD_WEB=10
 OWNER='@me'
 
-declare -i CREATED=0 EXISTING=0 ADDED=0
+# Counter file so subshells can write through (the `url=$(create_…)` capture
+# would otherwise eat any variable increment inside the function).
+COUNTERS=$(mktemp)
+printf 'CREATED=0\nEXISTING=0\nADDED=0\n' > "$COUNTERS"
+bump() { local k="$1"; local n; n=$(grep "^$k=" "$COUNTERS" | cut -d= -f2); echo "$k=$((n+1))" > /tmp/.b; sed -i "s/^$k=.*$/$(cat /tmp/.b)/" "$COUNTERS"; }
+
+# Cache the full open+closed issue list per repo so we hit the API once instead
+# of once per phase. Filter for exact-title match via jq with --arg (the v1
+# attempt at gh's --search was unreliable for titles with em-dashes / quotes).
+ISSUE_CACHE_DIR=$(mktemp -d)
+trap 'rm -rf "$ISSUE_CACHE_DIR" "$COUNTERS" /tmp/.b' EXIT
+
+repo_issues_cache() {
+  local repo="$1"
+  local cache="$ISSUE_CACHE_DIR/${repo//\//__}.json"
+  if [[ ! -f "$cache" ]]; then
+    # Only OPEN issues — closed dupes (e.g. from a botched earlier run) would
+    # otherwise be picked as "canonical" and re-added to the board.
+    gh issue list --repo "$repo" --state open --limit 200 --json title,url > "$cache"
+  fi
+  echo "$cache"
+}
 
 # create_or_get_issue REPO TITLE BODY → prints the issue URL
 create_or_get_issue() {
   local repo="$1" title="$2" body="$3"
+  local cache
+  cache=$(repo_issues_cache "$repo")
   local existing_url
-  existing_url=$(gh issue list --repo "$repo" --state all --search "in:title \"$title\"" \
-    --json title,url --jq ".[] | select(.title == \"$title\") | .url" | head -n1)
+  existing_url=$(jq -r --arg t "$title" '.[] | select(.title == $t) | .url' "$cache" | head -n1)
   if [[ -n "$existing_url" ]]; then
-    EXISTING+=1
+    bump EXISTING
     echo "$existing_url"
     return 0
   fi
   local new_url
   new_url=$(gh issue create --repo "$repo" --title "$title" --body "$body")
-  CREATED+=1
+  # Append the freshly-created issue to the cache so subsequent calls in the
+  # same run see it (jq -c -n keeps the file as a JSON array).
+  jq --arg t "$title" --arg u "$new_url" '. + [{title: $t, url: $u}]' "$cache" > "$cache.new" && mv "$cache.new" "$cache"
+  bump CREATED
   echo "$new_url"
 }
 
 add_to_board() {
   local board="$1" url="$2"
   if gh project item-add "$board" --owner "$OWNER" --url "$url" >/dev/null 2>&1; then
-    ADDED+=1
+    bump ADDED
   fi
 }
 
@@ -335,4 +360,7 @@ Generic `POST /api/intake/<businessId>?token=…` opens a ticket in a designated
 
 echo
 echo "== Done =="
+# Read final counts from the tempfile (subshells wrote through it).
+source "$COUNTERS"
+rm -f "$COUNTERS" /tmp/.b
 echo "Created: $CREATED  ·  Pre-existing reused: $EXISTING  ·  Added/refreshed on boards: $ADDED"
