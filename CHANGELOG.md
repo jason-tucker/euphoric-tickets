@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.5.5] — 2026-05-29 — Silent lifecycle status footers
+
+### Added
+- **`src/services/ticketStatus.ts`** — `postTicketStatus(channel, text)` posts a small grey `-# ` subtext line into a ticket channel with `MessageFlags.SuppressNotifications` (a "@silent" message — no ping/badge) and `allowedMentions: { parse: [] }` (mentions render as names, never ping). Best-effort: a failed post never breaks the action.
+- Wired into lifecycle events:
+  - **claim** (in the `claimTicket` service, so both the panel button and `/tickets claim` get it) → `Ticket claimed by <@x>`
+  - **unclaim** → `Ticket unclaimed by <@x>`
+  - **assign** → `Ticket assigned to <@target> by <@actor>`
+  - **add** → `<@target> was added to the ticket by <@actor>`
+  - **remove** → `<@target> was removed from the ticket by <@actor>`
+  - **rename** → `Channel renamed to \`#…\` by <@actor>`
+
+### Not changed by design
+- Bot-side **close** deletes the channel, so no footer is posted there (the opener still receives the close DM + transcript).
+- **Internal notes post nothing** to the ticket channel — they stay private to the staff thread. This is a hard rule.
+
+Closes euphoric-tickets#31.
+
 ## [0.5.4] — 2026-05-29 — Lantern P2: per-category gates + /tickets delete
 
 ### Added — Phase P2 of the lantern plan
@@ -115,4 +133,4 @@ Risks: bot now refuses to operate in any guild without a `businesses` row; trans
 - Docker + GHCR build pipeline (GitHub Actions), watchtower-enabled docker-compose, systemd weekly restart timer.
 - Bot management CLI at `scripts/euphoric-tickets` mirroring the otterbot/squishybot pattern.
 
-`v0.5.4 · e70a529`
+`v0.5.5 · pending`

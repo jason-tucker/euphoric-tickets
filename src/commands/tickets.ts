@@ -29,6 +29,7 @@ import { getBusinessByGuildId } from '../services/businessResolver'
 import { getDiscordIdForUserId, getOrCreateUserByDiscordId } from '../services/userResolver'
 import { resolveTicketAccessByChannel, type TicketAccess } from '../services/permissions'
 import { log } from '../services/logger'
+import { postTicketStatus } from '../services/ticketStatus'
 
 export const data = new SlashCommandBuilder()
   .setName('tickets')
@@ -215,6 +216,9 @@ async function unclaimHere(interaction: ChatInputCommandInteraction): Promise<vo
     .set({ status: 'open', assigneeUserId: null, lastActivityAt: new Date() })
     .where(eq(tickets.id, ticket.id))
 
+  const channel = interaction.channel as TextChannel | null
+  if (channel) await postTicketStatus(channel, `Ticket unclaimed by <@${member.id}>`)
+
   await interaction.reply({ content: '🔓 Unclaimed — ticket is back in the open pool.', allowedMentions: { parse: [] } })
 }
 
@@ -243,6 +247,9 @@ async function assignHere(interaction: ChatInputCommandInteraction): Promise<voi
     .update(tickets)
     .set({ status: 'claimed', assigneeUserId: targetUserId, lastActivityAt: new Date() })
     .where(eq(tickets.id, ticket.id))
+
+  const channel = interaction.channel as TextChannel | null
+  if (channel) await postTicketStatus(channel, `Ticket assigned to <@${target.id}> by <@${ctx.member.id}>`)
 
   await interaction.reply({
     content: `🪪 Assigned to <@${target.id}>.`,
@@ -291,6 +298,8 @@ async function addMember(interaction: ChatInputCommandInteraction): Promise<void
     EmbedLinks: true,
   })
 
+  await postTicketStatus(channel, `<@${target.id}> was added to the ticket by <@${member.id}>`)
+
   await interaction.reply({ content: `➕ <@${target.id}> added to this ticket.`, allowedMentions: { users: [target.id] } })
 
   void logTicketEvent({
@@ -332,6 +341,8 @@ async function removeMember(interaction: ChatInputCommandInteraction): Promise<v
   }
 
   await channel.permissionOverwrites.delete(target.id, `Removed from ticket #${ticket.id} by ${member.user.tag}`)
+
+  await postTicketStatus(channel, `<@${target.id}> was removed from the ticket by <@${member.id}>`)
 
   await interaction.reply({ content: `➖ <@${target.id}> removed from this ticket.`, allowedMentions: { parse: [] } })
 
@@ -451,6 +462,7 @@ async function renameTicket(interaction: ChatInputCommandInteraction): Promise<v
 
   await interaction.deferReply()
   await channel.setName(finalName, `Renamed by ${member.user.tag}`)
+  await postTicketStatus(channel, `Channel renamed to \`#${finalName}\` by <@${member.id}>`)
   await interaction.editReply({ content: `✏️ Renamed from \`#${previousName}\` to \`#${finalName}\`.`, allowedMentions: { parse: [] } })
 
   void logTicketEvent({

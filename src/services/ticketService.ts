@@ -18,6 +18,7 @@ import { fetchAllMessages, renderTranscriptHtml } from './transcriptService'
 import { logTicketEvent } from './ticketLogger'
 import { log } from './logger'
 import { canOpenCategory, staffRoleIdsForCategory } from './permissions'
+import { postTicketStatus } from './ticketStatus'
 
 export type OpenResult =
   | { ok: true; channel: TextChannel; ticket: Ticket }
@@ -221,6 +222,12 @@ export async function claimTicket(opts: {
     .returning()
 
   const openerDiscordId = await getDiscordIdForUserId(ticket.openerUserId)
+
+  // Silent subtext footer in the ticket channel.
+  if (ticket.discordChannelId) {
+    const ch = await claimer.guild.channels.fetch(ticket.discordChannelId).catch(() => null)
+    if (ch?.isTextBased()) await postTicketStatus(ch as TextChannel, `Ticket claimed by <@${claimer.id}>`)
+  }
 
   void logTicketEvent({
     guild: claimer.guild,
