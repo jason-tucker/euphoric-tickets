@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.5.23] — 2026-05-30 — Staff-only categories + per-category ticket kind (paired with web 0.6.37)
+
+### Database
+- New `ticket_categories.staff_only` (boolean, default false) and `ticket_categories.kind` ('normal' | 'project', default 'normal'). Container entrypoint runs `drizzle-kit push` against the shared web Postgres at startup, which adds both columns.
+
+### Changed
+- **`settingsService.getPanelCategories` filters out `staff_only` categories.** Their buttons never get rendered on the bot's open-ticket panel — they exist only as move-into targets for staff via the change-category flow. Was added in lockstep with the web's `/t/new` picker dropping the same categories.
+- **`openTicket()` reads `cat.kind` and stamps it onto the new ticket row** instead of leaving the column to default to 'normal'. Panel-opened tickets now pick up the same per-category Type setting that web-opened ones do.
+
+### Fixed
+- **`openTicket()` refuses to open a fresh ticket in a `staff_only` category.** Defense-in-depth — if a stale panel still has a button for a category that has since been flipped to staff-only, clicking it now returns "**X** is a staff-only destination — tickets can only be moved into it, not opened directly." instead of creating an orphan ticket.
+
 ## [0.5.22] — 2026-05-30 — More statuses; claim/assign set In Progress
 
 ### Changed

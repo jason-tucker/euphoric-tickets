@@ -1,4 +1,4 @@
-import { pgTable, text, timestamp, uniqueIndex, uuid } from 'drizzle-orm/pg-core'
+import { boolean, pgTable, text, timestamp, uniqueIndex, uuid } from 'drizzle-orm/pg-core'
 import { businesses } from './businesses'
 
 // Mirrored from euphoric-tickets-web. Open-ticket form options — each row
@@ -35,6 +35,20 @@ export const ticketCategories = pgTable(
     // the ticket's first message instead of the default welcome card.
     // Supports {{user}}, {{ticketId}}, {{subject}}, {{category}} placeholders.
     firstMessageTemplate: text('first_message_template'),
+
+    // Staff-only destination — when true, this category is hidden from the
+    // open-ticket flow everywhere (web /t/new, bot panel buttons). Staff can
+    // still MOVE existing tickets into it via the change-category command,
+    // so it's useful for triage/archive landing zones that should never be
+    // a fresh-ticket option. Mirrors the web schema.
+    staffOnly: boolean('staff_only').notNull().default(false),
+
+    // Default ticket kind for tickets opened in this category. `'normal'` =
+    // one-off issue; `'project'` = long-term work with sub-tickets. The
+    // web's previous Type picker on /t/new is gone — type is now a
+    // per-category property. Bot's `openTicket()` reads this and stamps
+    // the new ticket row with the category's kind. Mirrors the web schema.
+    kind: text('kind', { enum: ['normal', 'project'] as const }).notNull().default('normal'),
 
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },

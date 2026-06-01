@@ -52,6 +52,12 @@ export async function openTicket(opts: {
   const cat = catRows[0]
   if (!cat) return { ok: false, reason: 'Unknown ticket category. The panel may be out of date.' }
 
+  // Staff-only destinations never open fresh tickets — they exist only as
+  // move-into targets. If a stale panel still has this button, refuse.
+  if (cat.staffOnly) {
+    return { ok: false, reason: `**${cat.label}** is a staff-only destination — tickets can only be moved into it, not opened directly. The panel may be out of date.` }
+  }
+
   // P2: per-category open-gate. Empty allow_role_ids = anyone may open.
   if (!canOpenCategory(opener, business, cat)) {
     return {
@@ -158,6 +164,10 @@ export async function openTicket(opts: {
       categoryId: cat.id,
       subject,
       status: 'open',
+      // Pick up the category's configured kind ('normal' | 'project').
+      // Categories default to 'normal' so existing categories keep their
+      // current behaviour after the schema migration.
+      kind: cat.kind,
       discordChannelId: channel.id,
       lastActivityAt: new Date(),
     })

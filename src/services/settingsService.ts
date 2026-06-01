@@ -57,19 +57,25 @@ export async function getPanelCategories(guildId: string): Promise<PanelCategory
       label: ticketCategories.label,
       emoji: ticketCategories.emoji,
       description: ticketCategories.description,
+      staffOnly: ticketCategories.staffOnly,
     })
     .from(ticketCategories)
     .where(eq(ticketCategories.businessId, biz.id))
     .orderBy(asc(ticketCategories.sortOrder))
 
   if (rows.length === 0) return DEFAULT_PANEL_CATEGORIES
-  // Discord ActionRow caps at 5 buttons.
-  return rows.slice(0, 5).map((r) => ({
-    key: r.key,
-    label: r.label,
-    emoji: r.emoji ?? undefined,
-    description: r.description ?? undefined,
-  }))
+  // Discord ActionRow caps at 5 buttons. Staff-only destinations never get
+  // a panel button — they exist only as move-into targets in the staff
+  // change-category flow.
+  return rows
+    .filter((r) => !r.staffOnly)
+    .slice(0, 5)
+    .map((r) => ({
+      key: r.key,
+      label: r.label,
+      emoji: r.emoji ?? undefined,
+      description: r.description ?? undefined,
+    }))
 }
 
 // Settings writes — used by /tickets settings modal. The category list
