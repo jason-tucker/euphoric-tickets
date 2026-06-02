@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.5.29] — 2026-06-02 — One-off: reprocess embeds for already-ingested TicketTool tickets
+
+### Added
+- **`reprocessTicketToolEmbeds(client, { businessId? })`** + maintenance endpoint **`POST /api/internal/tickettool/reprocess-embeds`** (auth `INTERNAL_TOKEN`). For each TicketTool ticket it deletes the `(no text)` placeholder message rows and re-runs the current backfill, which (since v0.5.28) flattens embeds into the body and keeps embed-only messages — so welcome cards / log embeds that were dropped or stored as `(no text)` before the embed fix get pulled in. Idempotent; backfill is capped at the last 100 messages per channel (and the linked internal thread). Runs against the already-connected gateway client (no second login).
+
 ## [0.5.28] — 2026-06-02 — Ingest embed content (TicketTool cards/logs)
 
 ### Added

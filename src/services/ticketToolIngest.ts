@@ -8,7 +8,7 @@ import {
 } from 'discord.js'
 import { and, eq } from 'drizzle-orm'
 import { db } from '../db/client'
-import { tickets } from '../db/schema'
+import { tickets, ticketMessages } from '../db/schema'
 import { type Business } from '../db/schema/businesses'
 import { getOrCreateUserByDiscordId } from './userResolver'
 import { backfillChannelMessages } from './messageBackfill'
@@ -209,6 +209,65 @@ export async function reconcileBusinessTicketTool(client: Client, business: Busi
     }
   }
   return matched
+}
+
+// One-off maintenance: re-pull embed content for already-ingested TicketTool
+// tickets. Tickets ingested before v0.5.28 either dropped embed-only messages
+// (old backfill skipped them) or stored them as "(no text)" (old live relay).
+// For each TicketTool ticket we delete the "(no text)" placeholder rows and
+// re-run the current backfill, which now flattens embeds into the body and no
+// longer skips embed-only messages. Idempotent + safe to re-run. Returns how
+// many tickets were touched and how many message rows were re-inserted.
+export async function reprocessTicketToolEmbeds(
+  client: Client,
+  opts: { businessId?: string } = {},
+): Promise<{ tickets: number; reinserted: number }> {
+  const rows = await db
+    .select({
+      id: tickets.id,
+      channelId: tickets.discordChannelId,
+      internalThreadId: tickets.discordInternalThreadId,
+    })
+    .from(tickets)
+    .where(
+      opts.businessId
+        ? and(eq(tickets.externalSource, 'tickettool'), eq(tickets.businessId, opts.businessId))
+        : eq(tickets.externalSource, 'tickettool'),
+    )
+
+  let processed = 0
+  let reinserted = 0
+  for (const row of rows) {
+    if (!row.channelId) continue
+    processed++
+
+    // Drop placeholder rows so the new backfill re-inserts them with embed text;
+    // genuinely-empty messages simply won't come back.
+    await db
+      .delete(ticketMessages)
+      .where(and(eq(ticketMessages.ticketId, row.id), eq(ticketMessages.body, '(no text)')))
+
+    const channel = await client.channels.fetch(row.channelId).catch(() => null)
+    if (channel && channel.type === ChannelType.GuildText) {
+      reinserted += await backfillChannelMessages(channel as TextChannel, row.id, { limit: 100 }).catch(
+        () => 0,
+      )
+    }
+    if (row.internalThreadId) {
+      const thread = await client.channels.fetch(row.internalThreadId).catch(() => null)
+      if (
+        thread &&
+        (thread.type === ChannelType.PrivateThread || thread.type === ChannelType.PublicThread)
+      ) {
+        reinserted += await backfillChannelMessages(thread as ThreadChannel, row.id, {
+          limit: 100,
+          source: 'internal',
+        }).catch(() => 0)
+      }
+    }
+  }
+  log.info('tickettool: reprocessed embeds', { tickets: processed, reinserted })
+  return { tickets: processed, reinserted }
 }
 
 // Mark a TicketTool shadow ticket closed because its channel was deleted

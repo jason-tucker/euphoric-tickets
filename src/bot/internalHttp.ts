@@ -6,7 +6,7 @@ import { businesses } from '../db/schema'
 import { env } from '../config/env'
 import { log } from '../services/logger'
 import { runTicketToolCommand, type TicketToolAction } from '../services/ticketToolControl'
-import { reconcileBusinessTicketTool } from '../services/ticketToolIngest'
+import { reconcileBusinessTicketTool, reprocessTicketToolEmbeds } from '../services/ticketToolIngest'
 
 // P13 (lantern) — tiny internal HTTP server. Exposes POST /api/internal/dm so
 // the web's notification dispatcher can send a Discord DM through the bot
@@ -27,6 +27,7 @@ export function startInternalHttp(client: Client): void {
     '/api/internal/dm',
     '/api/internal/tickettool/command',
     '/api/internal/tickettool/reconcile',
+    '/api/internal/tickettool/reprocess-embeds',
   ])
 
   const server = http.createServer((req, res) => {
@@ -80,6 +81,17 @@ export function startInternalHttp(client: Client): void {
             }
             const count = await reconcileBusinessTicketTool(client, biz)
             res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ ok: true, count }))
+            return
+          }
+
+          // POST /api/internal/tickettool/reprocess-embeds — one-off maintenance:
+          // re-pull embed content for already-ingested TicketTool tickets (the
+          // welcome cards / log embeds that landed as "(no text)" before v0.5.28).
+          // Body: { businessId? }.
+          if (url === '/api/internal/tickettool/reprocess-embeds') {
+            const { businessId } = JSON.parse(raw || '{}') as { businessId?: string }
+            const out = await reprocessTicketToolEmbeds(client, { businessId })
+            res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ ok: true, ...out }))
             return
           }
 
