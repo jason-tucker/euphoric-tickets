@@ -20,6 +20,7 @@ import { log } from './logger'
 import { canOpenCategory, staffRoleIdsForCategory } from './permissions'
 import { postTicketStatus } from './ticketStatus'
 import { dispatchNotify } from './notifyBridge'
+import { writeAudit } from './audit'
 
 type ResolvedBusiness = NonNullable<Awaited<ReturnType<typeof getBusinessByGuildId>>>
 
@@ -235,6 +236,16 @@ export async function openTicket(opts: {
     actorUserId: openerUserIdForNotify,
   })
 
+  // Lifecycle audit — pairs with the web's writeAudit calls so the merged
+  // conversation/log view sees panel-button opens too.
+  await writeAudit({
+    businessId: business.id,
+    ticketId: row.id,
+    actorUserId: openerUserId,
+    action: 'opened',
+    metadata: { via: 'bot', categoryId: cat.id, categoryLabel: cat.label },
+  })
+
   return { ok: true, channel, ticket: row }
 }
 
@@ -282,6 +293,13 @@ export async function claimTicket(opts: {
       Opener: openerDiscordId ? `<@${openerDiscordId}>` : '_(unknown)_',
       Channel: ticket.discordChannelId ? `<#${ticket.discordChannelId}>` : '_(no channel)_',
     },
+  })
+
+  await writeAudit({
+    businessId: ticket.businessId,
+    ticketId: ticket.id,
+    actorUserId: claimerUserId,
+    action: 'claimed',
   })
 
   return { ok: true, updated }
@@ -429,6 +447,13 @@ export async function closeTicket(opts: {
 
   await channel.delete(`Ticket #${ticket.id} closed by ${closer.user.tag}`).catch((err) => {
     log.warn('Channel delete failed', { ticketId: ticket.id, err: String(err) })
+  })
+
+  await writeAudit({
+    businessId: ticket.businessId,
+    ticketId: ticket.id,
+    actorUserId: closerUserId,
+    action: 'closed',
   })
 
   return { ok: true }

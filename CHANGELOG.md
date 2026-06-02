@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.5.24] — 2026-05-30 — Lifecycle audit log (paired with web 0.6.42)
+
+### Database
+- New `audit_logs` table — `(business_id, ticket_id, actor_user_id, action, metadata jsonb, created_at)` plus `(ticket_id, created_at)` and `(business_id, created_at)` indexes. Container entrypoint's `drizzle-kit push` adds it on startup. The bot writes here for panel-button opens, claim button, and `/tickets close`; the web writes for its server actions. See the paired entry in `euphoric-tickets-web 0.6.42` for the full action enum and how the web reads these rows.
+
+### Added
+- **`writeAudit(...)` helper** in `src/services/audit.ts`. Mirrors `euphoric-tickets-web/src/server/audit.ts`. Best-effort — a failed insert never blocks the action it was tracking.
+- **Audit writes wired into the bot's three lifecycle entry points**: `openTicket()` → `opened {via: 'bot', categoryId, categoryLabel}` after a successful panel-button open; `claimTicket()` → `claimed`; `closeTicket()` → `closed`. The web layer covers every other action so this is the bot's complete responsibility for now.
+
 ## [0.5.23] — 2026-05-30 — Staff-only categories + per-category ticket kind (paired with web 0.6.37)
 
 ### Database
