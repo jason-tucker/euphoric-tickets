@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.5.25] — 2026-06-01 — TicketTool coexistence: ingest + control third-party TicketTool tickets (paired with web 0.6.44)
+
+### Database
+- Mirrors the web schema change: `tickets.external_source` (`'euphoric'` default / `'tickettool'`) + `tickets.external_transcript_url`, `tickets_external_source_idx`, and `businesses.ticket_tool_category_ids` (CSV of watched GUILD_CATEGORY snowflakes) + `businesses.ticket_tool_prefix` (default `$`). Container entrypoint `drizzle-kit push` adds them; web deploys the canonical columns first, so the bot's push is a no-op.
+
+### Added
+- **Ingest** — when the third-party TicketTool bot opens a channel under a watched category, the bot creates a "shadow" `tickets` row (`external_source='tickettool'`, keyed by `discord_channel_id`) so the existing messageCreate relay captures all of its messages into the unified web archive. New `src/services/ticketToolIngest.ts` (`ensureShadowTicket`, opener resolution via member overwrite → welcome @mention → first human author, `closeShadowTicket`). New `channelCreate` / `channelDelete` events (registered in `src/index.ts`); `messageCreate` gains a lazy-ingest hook (catches openers only resolvable once they speak) and **skips `dispatchNotify` for external tickets**. A best-effort webhook is minted on the channel so the web can post two-way replies. Opener `NOT NULL` is satisfied without a schema change by deferring row creation until an opener resolves.
+- **Control** — `src/services/ticketToolControl.ts` emits TicketTool's `$` commands **as the bot user** (TicketTool whitelists by user id) using the business prefix: `closeRequest`, `rename`, `add`, `remove`. Reached from the web via a new internal endpoint **`POST /api/internal/tickettool/command`** (extends `internalHttp.ts`, auth `INTERNAL_TOKEN`). `/tickets rename|add|remove|close` on a TicketTool ticket route to these commands; `claim|unclaim|assign|delete|category` are refused. Defensive guards at the top of `ticketService.closeTicket` / `changeTicketCategory` ensure euphoric never deletes or moves a TicketTool channel (covers button paths).
+- **Resilience** — startup resync excludes external tickets from the orphan scan (a vanished channel = TicketTool closed it → close the shadow row, never `needsAttention`) and adds **Pass 4**: ingest any unmodeled channel under a watched category (opened while the bot was down).
+- **Config + docs** — `/tickets settings` modal gains TicketTool **category IDs** + **prefix** fields (mirrors the web settings card); the settings panel and `/help` show the watched categories and the bot's user ID to whitelist in TicketTool → Server Configs → Bot.
+
 ## [0.5.24] — 2026-05-30 — Lifecycle audit log (paired with web 0.6.42)
 
 ### Database

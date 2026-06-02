@@ -7,6 +7,7 @@ import {
 } from 'discord.js'
 import { isSudoUser } from '../../services/sudoService'
 import { getCategoryId, getPanelCategories, getStaffRoleIds } from '../../services/settingsService'
+import { getBusinessByGuildId } from '../../services/businessResolver'
 
 export async function handleSettingsButton(interaction: ButtonInteraction): Promise<void> {
   if (!interaction.inGuild() || !interaction.guild) return
@@ -25,10 +26,11 @@ export async function handleSettingsButton(interaction: ButtonInteraction): Prom
 
   // Source of truth now lives on `businesses` / `ticket_categories`.
   // Transcript + log channel rows were dropped — see settingsService TODO.
-  const [catId, staffIds, panelCats] = await Promise.all([
+  const [catId, staffIds, panelCats, business] = await Promise.all([
     getCategoryId(interaction.guild.id),
     getStaffRoleIds(interaction.guild.id),
     getPanelCategories(interaction.guild.id),
+    getBusinessByGuildId(interaction.guild.id),
   ])
 
   const modal = new ModalBuilder()
@@ -58,10 +60,30 @@ export async function handleSettingsButton(interaction: ButtonInteraction): Prom
     .setMaxLength(4000)
     .setValue(JSON.stringify(panelCats, null, 2))
 
+  // TicketTool coexistence: watched category IDs (CSV) + command prefix. Empty
+  // category list = feature off. Editing here mirrors the web settings card.
+  const ttCategoriesInput = new TextInputBuilder()
+    .setCustomId('tickettool_category_ids')
+    .setLabel('TicketTool category IDs (CSV, blank=off)')
+    .setStyle(TextInputStyle.Short)
+    .setRequired(false)
+    .setPlaceholder('Categories TicketTool opens tickets under')
+    .setValue(business?.ticketToolCategoryIds ?? '')
+
+  const ttPrefixInput = new TextInputBuilder()
+    .setCustomId('tickettool_prefix')
+    .setLabel('TicketTool command prefix')
+    .setStyle(TextInputStyle.Short)
+    .setRequired(false)
+    .setMaxLength(5)
+    .setValue(business?.ticketToolPrefix ?? '$')
+
   modal.addComponents(
     new ActionRowBuilder<TextInputBuilder>().addComponents(categoryInput),
     new ActionRowBuilder<TextInputBuilder>().addComponents(staffInput),
     new ActionRowBuilder<TextInputBuilder>().addComponents(panelInput),
+    new ActionRowBuilder<TextInputBuilder>().addComponents(ttCategoriesInput),
+    new ActionRowBuilder<TextInputBuilder>().addComponents(ttPrefixInput),
   )
 
   await interaction.showModal(modal)

@@ -45,6 +45,15 @@ export const businesses = pgTable('businesses', {
   kind: text('kind', { enum: ['host', 'client'] }).notNull().default('host'),
   parentBusinessId: uuid('parent_business_id'),
 
+  // TicketTool coexistence. CSV of GUILD_CATEGORY snowflakes that the
+  // third-party TicketTool bot opens its ticket channels under. The bot
+  // watches these categories, ingests those channels as tickets
+  // (external_source='tickettool'), and controls them via TicketTool's
+  // $-prefix commands. Empty = feature off. Mirrors euphoric-tickets-web.
+  ticketToolCategoryIds: text('ticket_tool_category_ids').notNull().default(''),
+  // The command prefix configured in this server's TicketTool. Default '$'.
+  ticketToolPrefix: text('ticket_tool_prefix').notNull().default('$'),
+
   // Free-form JSON for forward-compat (color, custom labels, etc.).
   settings: jsonb('settings').$type<Record<string, unknown>>().notNull().default({}),
 

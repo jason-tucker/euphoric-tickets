@@ -55,6 +55,14 @@ export const tickets = pgTable(
     // P11: set by the startup resync when a ticket's Discord channel has
     // vanished out from under us, so staff can spot orphaned tickets on the web.
     needsAttention: boolean('needs_attention').notNull().default(false),
+
+    // Origin of the ticket. 'euphoric' = opened through this system (panel,
+    // /tickets, or web). 'tickettool' = a channel the third-party TicketTool
+    // bot opened that we ingest into the unified archive and control via its
+    // $-prefix commands. Mirrors euphoric-tickets-web.
+    externalSource: text('external_source').notNull().default('euphoric'),
+    externalTranscriptUrl: text('external_transcript_url'),
+
     openedAt: timestamp('opened_at', { withTimezone: true }).notNull().defaultNow(),
     closedAt: timestamp('closed_at', { withTimezone: true }),
     closedByUserId: uuid('closed_by_user_id').references(() => users.id),
@@ -64,8 +72,14 @@ export const tickets = pgTable(
     byBusinessStatus: index('tickets_business_status_idx').on(t.businessId, t.status),
     byOpener: index('tickets_opener_idx').on(t.openerUserId),
     byAssignee: index('tickets_assignee_idx').on(t.assigneeUserId),
+    byExternalSource: index('tickets_external_source_idx').on(t.externalSource),
   }),
 )
+
+// Values for tickets.external_source. Plain text column (not a pg enum) to keep
+// drizzle-kit push --force friction-free; this is the app-level source of truth.
+export const ticketExternalSources = ['euphoric', 'tickettool'] as const
+export type TicketExternalSource = (typeof ticketExternalSources)[number]
 
 export type Ticket = typeof tickets.$inferSelect
 export type NewTicket = typeof tickets.$inferInsert
