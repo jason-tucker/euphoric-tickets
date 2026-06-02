@@ -6,7 +6,12 @@ import {
   type ButtonInteraction,
 } from 'discord.js'
 import { isSudoUser } from '../../services/sudoService'
-import { getCategoryId, getPanelCategories, getStaffRoleIds } from '../../services/settingsService'
+import {
+  getCategoryId,
+  getPanelCategories,
+  getStaffRoleIds,
+  updateBusinessSettings,
+} from '../../services/settingsService'
 import { getBusinessByGuildId } from '../../services/businessResolver'
 
 export async function handleSettingsButton(interaction: ButtonInteraction): Promise<void> {
@@ -19,6 +24,29 @@ export async function handleSettingsButton(interaction: ButtonInteraction): Prom
   }
 
   const action = interaction.customId.slice('tk:settings:'.length)
+
+  // Flip the ticket system for this team between euphoric-native and TicketTool.
+  if (action === 'togglemode') {
+    const business = await getBusinessByGuildId(interaction.guild.id)
+    if (!business) {
+      await interaction.reply({
+        content: 'This server is not configured as a team — create one at https://tickets.euphoric.fm/admin.',
+        ephemeral: true,
+      })
+      return
+    }
+    const next = business.ticketMode === 'tickettool' ? 'euphoric' : 'tickettool'
+    await updateBusinessSettings(interaction.guild.id, { ticketMode: next })
+    await interaction.reply({
+      content:
+        next === 'tickettool'
+          ? '🔁 This team now runs on **TicketTool**. euphoric won’t open its own tickets here — it ingests + controls TicketTool’s. Make sure watched categories + prefix are set, and that this bot is whitelisted in TicketTool → Server Configs → Bot.'
+          : '🔁 This team now runs on **Euphoric Tickets** (native panels + web). TicketTool ingestion is paused.',
+      ephemeral: true,
+    })
+    return
+  }
+
   if (action !== 'edit') {
     await interaction.reply({ content: `Unknown settings action: ${action}`, ephemeral: true })
     return

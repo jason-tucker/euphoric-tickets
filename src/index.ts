@@ -6,6 +6,7 @@ import { registerInteractionCreate } from './bot/events/interactionCreate'
 import { registerMessageCreate } from './bot/events/messageCreate'
 import { registerChannelCreate } from './bot/events/channelCreate'
 import { registerChannelDelete } from './bot/events/channelDelete'
+import { registerThreadCreate } from './bot/events/threadCreate'
 import { startHealthPush, stopHealthPush } from './bot/healthPush'
 import { startScheduledCleanup, stopScheduledCleanup } from './bot/scheduledCleanup'
 import { startInternalHttp } from './bot/internalHttp'
@@ -18,6 +19,7 @@ registerInteractionCreate(client)
 registerMessageCreate(client)
 registerChannelCreate(client)
 registerChannelDelete(client)
+registerThreadCreate(client)
 
 process.on('unhandledRejection', (reason) => {
   log.error('Unhandled rejection', { reason: String(reason) })

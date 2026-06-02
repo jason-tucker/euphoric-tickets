@@ -1,4 +1,4 @@
-import { type Message, type TextChannel } from 'discord.js'
+import { type Message, type TextChannel, type ThreadChannel } from 'discord.js'
 import { eq } from 'drizzle-orm'
 import { db } from '../db/client'
 import { ticketMessages, type MessageAttachment } from '../db/schema/ticketMessages'
@@ -22,7 +22,7 @@ export function extractAttachments(msg: Message): MessageAttachment[] {
 // messages, dedupes by discord_message_id, preserves original timestamps,
 // and captures attachments. Returns the count inserted.
 export async function backfillChannelMessages(
-  channel: TextChannel,
+  channel: TextChannel | ThreadChannel,
   ticketId: number,
   opts?: { limit?: number; source?: 'discord' | 'internal' },
 ): Promise<number> {

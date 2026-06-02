@@ -367,8 +367,10 @@ async function openSettings(interaction: ChatInputCommandInteraction): Promise<v
     .map((s) => s.trim())
     .filter(Boolean)
 
+  const mode = business?.ticketMode === 'tickettool' ? 'TicketTool' : 'Euphoric Tickets'
   const lines = [
     '## ⚙️ Ticket Settings',
+    `**Ticket system:** ${mode}`,
     `**Fallback tickets category:** ${catId ? `<#${catId}> (\`${catId}\`)` : '_(not set)_'}`,
     `**Staff roles:** ${staffIds.length ? staffIds.map((id) => `<@&${id}>`).join(' ') : '_(none — only opener can see ticket)_'}`,
     `**Panel categories:** ${panelCats.length} configured`,
@@ -394,7 +396,13 @@ async function openSettings(interaction: ChatInputCommandInteraction): Promise<v
     .setStyle(ButtonStyle.Primary)
     .setEmoji('✏️')
 
-  const row = new ActionRowBuilder<ButtonBuilder>().addComponents(editBtn)
+  const toggleBtn = new ButtonBuilder()
+    .setCustomId('tk:settings:togglemode')
+    .setLabel(business?.ticketMode === 'tickettool' ? 'Switch to Euphoric mode' : 'Switch to TicketTool mode')
+    .setStyle(ButtonStyle.Secondary)
+    .setEmoji('🔁')
+
+  const row = new ActionRowBuilder<ButtonBuilder>().addComponents(editBtn, toggleBtn)
 
   await interaction.editReply({
     flags: MessageFlags.IsComponentsV2,
