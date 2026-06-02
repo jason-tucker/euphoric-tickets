@@ -319,6 +319,9 @@ export async function changeTicketCategory(opts: {
 }): Promise<{ ok: true } | { ok: false; reason: string }> {
   const { guild, channel, ticket, newCategory, business, actorId } = opts
 
+  if (ticket.externalSource === 'tickettool') {
+    return { ok: false, reason: "euphoric doesn't move TicketTool channels." }
+  }
   if (ticket.categoryId === newCategory.id) {
     return { ok: false, reason: `This ticket is already in **${newCategory.label}**.` }
   }
@@ -369,6 +372,12 @@ export async function closeTicket(opts: {
   const { guild, channel, ticket, closer } = opts
 
   if (ticket.status === 'closed') return { ok: false, reason: 'This ticket is already closed.' }
+  // Never run euphoric's close flow (which deletes the channel) on a TicketTool
+  // ticket — those are closed via TicketTool ($closeRequest). Defensive: covers
+  // the close-button path too.
+  if (ticket.externalSource === 'tickettool') {
+    return { ok: false, reason: 'This is a TicketTool ticket — use Request close instead.' }
+  }
 
   const closerUserId = await getOrCreateUserByDiscordId(closer.id, {
     name: closer.user.globalName ?? closer.user.username,

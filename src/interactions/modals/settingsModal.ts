@@ -1,5 +1,16 @@
 import type { ModalSubmitInteraction } from 'discord.js'
 import { isSudoUser } from '../../services/sudoService'
+
+// Read a TextInput that may be absent on a stale modal submit (the TicketTool
+// rows were added after the original 3). getTextInputValue throws when the
+// field is missing, so swallow that and default to empty.
+function optionalField(interaction: ModalSubmitInteraction, customId: string): string {
+  try {
+    return interaction.fields.getTextInputValue(customId).trim()
+  } catch {
+    return ''
+  }
+}
 import {
   isSnowflake,
   parseSnowflakeCsv,
@@ -33,6 +44,8 @@ export async function handleSettingsModalSubmit(interaction: ModalSubmitInteract
   const categoryId = interaction.fields.getTextInputValue('category_id').trim()
   const staffRoleIdsRaw = interaction.fields.getTextInputValue('staff_role_ids').trim()
   const panelCategoriesRaw = interaction.fields.getTextInputValue('panel_categories')
+  const ttCategoriesRaw = optionalField(interaction, 'tickettool_category_ids')
+  const ttPrefixRaw = optionalField(interaction, 'tickettool_prefix')
 
   const errors: string[] = []
 
@@ -44,6 +57,10 @@ export async function handleSettingsModalSubmit(interaction: ModalSubmitInteract
   const panelResult = validatePanelCategoriesJson(panelCategoriesRaw)
   if (!panelResult.ok) errors.push(`• Panel categories: ${panelResult.error}`)
 
+  const { ok: validTtCats, bad: badTtCats } = parseSnowflakeCsv(ttCategoriesRaw)
+  if (badTtCats.length) errors.push(`• Invalid TicketTool category IDs: \`${badTtCats.join('`, `')}\``)
+  if (ttPrefixRaw.length > 5) errors.push('• TicketTool prefix must be 1–5 characters.')
+
   if (errors.length) {
     await interaction.editReply('Could not save:\n' + errors.join('\n'))
     return
@@ -52,6 +69,8 @@ export async function handleSettingsModalSubmit(interaction: ModalSubmitInteract
   await updateBusinessSettings(interaction.guild.id, {
     discordFallbackCategoryId: categoryId,
     adminRoleIds: validStaff.join(','),
+    ticketToolCategoryIds: validTtCats.join(','),
+    ticketToolPrefix: ttPrefixRaw || '$',
   })
 
   if (panelResult.ok) {

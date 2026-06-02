@@ -1,10 +1,11 @@
-import type { Client, Message } from 'discord.js'
+import { ChannelType, type Client, type Message } from 'discord.js'
 import { eq, or, sql } from 'drizzle-orm'
 import { db } from '../../db/client'
 import { tickets, ticketMessages } from '../../db/schema'
 import { getOrCreateUserByDiscordId } from '../../services/userResolver'
 import { extractAttachments } from '../../services/messageBackfill'
 import { getBusinessByGuildId } from '../../services/businessResolver'
+import { ensureShadowTicket, isWatchedTicketToolChannel } from '../../services/ticketToolIngest'
 import { dispatchNotify } from '../../services/notifyBridge'
 import { log } from '../../services/logger'
 import { env } from '../../config/env'
@@ -64,7 +65,7 @@ async function handleMessage(msg: Message): Promise<void> {
   if (msg.author.id === msg.client.user.id) return
 
   // Match either the main per-ticket channel or its internal thread.
-  const [row] = await db
+  let [row] = await db
     .select({
       id: tickets.id,
       mainChannelId: tickets.discordChannelId,
@@ -72,6 +73,7 @@ async function handleMessage(msg: Message): Promise<void> {
       businessId: tickets.businessId,
       categoryId: tickets.categoryId,
       subject: tickets.subject,
+      externalSource: tickets.externalSource,
     })
     .from(tickets)
     .where(
@@ -81,6 +83,32 @@ async function handleMessage(msg: Message): Promise<void> {
       ),
     )
     .limit(1)
+
+  // TicketTool coexistence — lazy ingest. No ticket yet, but if this channel
+  // sits under one of the business's watched TicketTool categories, create the
+  // shadow ticket now (the opener may only have become resolvable with this
+  // message) and re-load the row so this message gets relayed too.
+  if (!row && msg.channel.type === ChannelType.GuildText && msg.channel.parentId) {
+    const business = await getBusinessByGuildId(msg.guildId)
+    if (business && isWatchedTicketToolChannel(business, msg.channel)) {
+      const ticketId = await ensureShadowTicket(msg.channel, business)
+      if (ticketId != null) {
+        ;[row] = await db
+          .select({
+            id: tickets.id,
+            mainChannelId: tickets.discordChannelId,
+            internalThreadId: tickets.discordInternalThreadId,
+            businessId: tickets.businessId,
+            categoryId: tickets.categoryId,
+            subject: tickets.subject,
+            externalSource: tickets.externalSource,
+          })
+          .from(tickets)
+          .where(eq(tickets.id, ticketId))
+          .limit(1)
+      }
+    }
+  }
   if (!row) return
 
   const isInternal = row.internalThreadId === msg.channelId
@@ -115,8 +143,10 @@ async function handleMessage(msg: Message): Promise<void> {
     .where(eq(tickets.id, row.id))
 
   // P13: notify the ticket's opener/assignee of a Discord-origin reply.
-  // Internal-thread messages never notify (they're staff-private).
-  if (!isInternal) {
+  // Internal-thread messages never notify (they're staff-private). TicketTool
+  // tickets never notify either — the opener often isn't a web user, categoryId
+  // is null so opt-ins won't match, and TicketTool already pings in-channel.
+  if (!isInternal && row.externalSource === 'euphoric') {
     const business = await getBusinessByGuildId(msg.guildId)
     if (business) {
       dispatchNotify({

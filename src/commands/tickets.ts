@@ -25,6 +25,7 @@ import {
   getStaffRoleIds,
 } from '../services/settingsService'
 import { changeTicketCategory, claimTicket, closeTicket } from '../services/ticketService'
+import { runTicketToolCommand, type TicketToolAction } from '../services/ticketToolControl'
 import { buildCloseConfirm } from '../services/ticketRenderer'
 import { getBusinessByGuildId } from '../services/businessResolver'
 import { getDiscordIdForUserId, getOrCreateUserByDiscordId } from '../services/userResolver'
@@ -129,6 +130,7 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
 async function changeCategoryHere(interaction: ChatInputCommandInteraction): Promise<void> {
   const ctx = await loadCtx(interaction)
   if (!ctx) return
+  if (await routeExternalTicket(interaction, ctx, 'refuse')) return
   if (!ctx.access.canChangeCategory) {
     await interaction.reply({ content: "Only admins can change a ticket's category.", ephemeral: true })
     return
@@ -301,6 +303,49 @@ async function loadCtx(
   return { member, business, ticket: res.ticket, access: res.access }
 }
 
+// TicketTool-ingested tickets: euphoric must never touch the channel itself.
+// Route the supported management actions to TicketTool's $ commands (as the bot
+// user) and refuse the rest. Returns true when the ticket is external and the
+// interaction was handled here, so the native handler can early-out.
+async function routeExternalTicket(
+  interaction: ChatInputCommandInteraction,
+  ctx: { ticket: Ticket },
+  action: TicketToolAction | 'refuse',
+  opts?: { name?: string; discordUserId?: string },
+): Promise<boolean> {
+  if (ctx.ticket.externalSource !== 'tickettool') return false
+
+  if (action === 'refuse') {
+    await interaction.reply({
+      content:
+        "This is a TicketTool-managed ticket — euphoric won't do that here. You can rename, " +
+        'add/remove people, or request a close; for anything else, use TicketTool.',
+      ephemeral: true,
+    })
+    return true
+  }
+
+  const result = await runTicketToolCommand(interaction.client, {
+    ticketId: ctx.ticket.id,
+    action,
+    name: opts?.name,
+    discordUserId: opts?.discordUserId,
+  })
+  const labels: Record<TicketToolAction, string> = {
+    closeRequest: 'close request',
+    rename: 'rename',
+    add: 'add',
+    remove: 'remove',
+  }
+  await interaction.reply({
+    content: result.ok
+      ? `✓ Sent TicketTool **${labels[action]}**.`
+      : `Couldn't reach TicketTool: ${result.error}`,
+    ephemeral: true,
+  })
+  return true
+}
+
 async function openSettings(interaction: ChatInputCommandInteraction): Promise<void> {
   const member = await interaction.guild!.members.fetch(interaction.user.id)
   if (!isSudoUser(member)) {
@@ -310,19 +355,26 @@ async function openSettings(interaction: ChatInputCommandInteraction): Promise<v
 
   await interaction.deferReply({ ephemeral: true })
 
-  const [catId, staffIds, panelCats] = await Promise.all([
+  const [catId, staffIds, panelCats, business] = await Promise.all([
     getCategoryId(interaction.guild!.id),
     getStaffRoleIds(interaction.guild!.id),
     getPanelCategories(interaction.guild!.id),
+    getBusinessByGuildId(interaction.guild!.id),
   ])
+
+  const ttCats = (business?.ticketToolCategoryIds ?? '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean)
 
   const lines = [
     '## ⚙️ Ticket Settings',
     `**Fallback tickets category:** ${catId ? `<#${catId}> (\`${catId}\`)` : '_(not set)_'}`,
     `**Staff roles:** ${staffIds.length ? staffIds.map((id) => `<@&${id}>`).join(' ') : '_(none — only opener can see ticket)_'}`,
     `**Panel categories:** ${panelCats.length} configured`,
+    `**TicketTool watch:** ${ttCats.length ? ttCats.map((id) => `<#${id}>`).join(' ') + ` · prefix \`${business?.ticketToolPrefix ?? '$'}\`` : '_(off)_'}`,
     '',
-    '_Transcript + log channel settings now live on the web (or are temporarily disabled). Edit business-wide settings at https://tickets.euphoric.fm/admin._',
+    `_TicketTool coexistence: whitelist this bot (\`${env.DISCORD_CLIENT_ID}\`) in TicketTool → Server Configs → Bot. Edit business-wide settings at https://tickets.euphoric.fm/admin._`,
   ]
   const catJsonPreview =
     '```json\n' +
@@ -353,6 +405,7 @@ async function openSettings(interaction: ChatInputCommandInteraction): Promise<v
 async function claimHere(interaction: ChatInputCommandInteraction): Promise<void> {
   const ctx = await loadCtx(interaction)
   if (!ctx) return
+  if (await routeExternalTicket(interaction, ctx, 'refuse')) return
   if (!ctx.access.canClaim) {
     await interaction.reply({ content: 'Only staff can claim tickets.', ephemeral: true })
     return
@@ -369,6 +422,7 @@ async function claimHere(interaction: ChatInputCommandInteraction): Promise<void
 async function unclaimHere(interaction: ChatInputCommandInteraction): Promise<void> {
   const ctx = await loadCtx(interaction)
   if (!ctx) return
+  if (await routeExternalTicket(interaction, ctx, 'refuse')) return
   const { ticket, member, access } = ctx
   if (ticket.status === 'closed') {
     await interaction.reply({ content: 'This ticket is already closed.', ephemeral: true })
@@ -400,6 +454,7 @@ async function unclaimHere(interaction: ChatInputCommandInteraction): Promise<vo
 async function assignHere(interaction: ChatInputCommandInteraction): Promise<void> {
   const ctx = await loadCtx(interaction)
   if (!ctx) return
+  if (await routeExternalTicket(interaction, ctx, 'refuse')) return
   if (!ctx.access.canClaim) {
     await interaction.reply({ content: 'Only staff can assign tickets.', ephemeral: true })
     return
@@ -439,6 +494,9 @@ async function closeHere(interaction: ChatInputCommandInteraction): Promise<void
     await interaction.reply({ content: 'Only the opener or staff can close this ticket.', ephemeral: true })
     return
   }
+  // TicketTool ticket: send a non-destructive $closeRequest instead of euphoric's
+  // own close flow (which would delete the channel).
+  if (await routeExternalTicket(interaction, ctx, 'closeRequest')) return
 
   await interaction.reply({
     ...(buildCloseConfirm(ctx.ticket.id) as any),
@@ -459,6 +517,7 @@ async function addMember(interaction: ChatInputCommandInteraction): Promise<void
   }
 
   const target = interaction.options.getUser('user', true)
+  if (await routeExternalTicket(interaction, ctx, 'add', { discordUserId: target.id })) return
   const channel = interaction.channel as TextChannel | null
   if (!channel) {
     await interaction.reply({ content: 'Channel context missing.', ephemeral: true })
@@ -508,6 +567,7 @@ async function removeMember(interaction: ChatInputCommandInteraction): Promise<v
     await interaction.reply({ content: 'Cannot remove the ticket opener — close the ticket instead.', ephemeral: true })
     return
   }
+  if (await routeExternalTicket(interaction, ctx, 'remove', { discordUserId: target.id })) return
 
   const channel = interaction.channel as TextChannel | null
   if (!channel) {
@@ -627,6 +687,9 @@ async function renameTicket(interaction: ChatInputCommandInteraction): Promise<v
   }
 
   const rawName = interaction.options.getString('name', true)
+  // TicketTool ticket: hand the rename to TicketTool ($rename) — it owns the
+  // channel. Send the raw name; TicketTool applies its own naming.
+  if (await routeExternalTicket(interaction, ctx, 'rename', { name: rawName })) return
   const slug = rawName.toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 90)
   if (!slug) {
     await interaction.reply({ content: 'Name produced an empty slug — pick something with letters or digits.', ephemeral: true })
@@ -659,6 +722,7 @@ async function renameTicket(interaction: ChatInputCommandInteraction): Promise<v
 async function deleteHere(interaction: ChatInputCommandInteraction): Promise<void> {
   const ctx = await loadCtx(interaction)
   if (!ctx) return
+  if (await routeExternalTicket(interaction, ctx, 'refuse')) return
   if (!ctx.access.canDelete) {
     await interaction.reply({ content: 'Only admins can delete a ticket channel.', ephemeral: true })
     return

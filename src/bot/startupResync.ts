@@ -3,7 +3,13 @@ import { and, eq, isNotNull, ne } from 'drizzle-orm'
 import { db } from '../db/client'
 import { tickets } from '../db/schema/tickets'
 import { ticketPanels } from '../db/schema/ticketPanels'
+import { businesses } from '../db/schema/businesses'
 import { backfillChannelMessages } from '../services/messageBackfill'
+import {
+  closeShadowTicket,
+  ensureShadowTicket,
+  parseTicketToolCategoryIds,
+} from '../services/ticketToolIngest'
 import { log, persistError } from '../services/logger'
 
 // P11 (lantern) — reconcile DB ↔ Discord on connect and backfill anything the
@@ -23,6 +29,7 @@ export async function runStartupResync(client: Client): Promise<void> {
       id: tickets.id,
       discordChannelId: tickets.discordChannelId,
       discordInternalThreadId: tickets.discordInternalThreadId,
+      externalSource: tickets.externalSource,
     })
     .from(tickets)
     .where(and(ne(tickets.status, 'closed'), isNotNull(tickets.discordChannelId)))
@@ -35,8 +42,14 @@ export async function runStartupResync(client: Client): Promise<void> {
     const channelId = t.discordChannelId!
     const channel = await client.channels.fetch(channelId).catch(() => null)
 
-    // Pass 1 — orphan scan.
+    // Pass 1 — orphan scan. TicketTool tickets are never orphaned: a missing
+    // channel means TicketTool closed/deleted it while we were down, so close
+    // the shadow row instead of flagging it for attention.
     if (!channel) {
+      if (t.externalSource === 'tickettool') {
+        await closeShadowTicket(channelId)
+        return
+      }
       await db
         .update(tickets)
         .set({ needsAttention: true, discordChannelId: null, discordWebhookId: null, discordWebhookUrl: null })
@@ -82,11 +95,39 @@ export async function runStartupResync(client: Client): Promise<void> {
     }
   }
 
+  // ---- Pass 4: TicketTool reconcile ---------------------------------------
+  // For each business watching TicketTool categories, ingest any channel under
+  // those categories that we don't have a row for yet (opened while the bot was
+  // down). ensureShadowTicket is idempotent, so already-modeled channels are
+  // no-ops. (Closing rows whose channel vanished is handled in Pass 1 above.)
+  let ttIngested = 0
+  const watchingBiz = (await db.select().from(businesses)).filter(
+    (b) => parseTicketToolCategoryIds(b).length > 0,
+  )
+  for (const biz of watchingBiz) {
+    const guild = await client.guilds.fetch(biz.discordGuildId).catch(() => null)
+    if (!guild) continue
+    const catIds = new Set(parseTicketToolCategoryIds(biz))
+    const channels = await guild.channels.fetch().catch(() => null)
+    if (!channels) continue
+    for (const channel of channels.values()) {
+      if (!channel || channel.type !== ChannelType.GuildText) continue
+      if (!channel.parentId || !catIds.has(channel.parentId)) continue
+      try {
+        const id = await ensureShadowTicket(channel as TextChannel, biz)
+        if (id != null) ttIngested++
+      } catch (err) {
+        log.warn('startup resync: tickettool ingest failed', { channelId: channel.id, err: String(err) })
+      }
+    }
+  }
+
   log.info('startup resync: done', {
     ms: Date.now() - started,
     openTickets: openTickets.length,
     orphans,
     backfilledMessages: backfilled,
     missingPanels,
+    ticketToolReconciled: ttIngested,
   })
 }

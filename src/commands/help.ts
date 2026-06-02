@@ -99,18 +99,21 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
 
   // ---- Admin --------------------------------------------------------------
   if (admin) {
-    blocks.push(
-      new TextDisplayBuilder().setContent(
-        [
-          '### Admin',
-          '• `/tickets category <key>` — move a ticket to another category (also the 🗂️ button).',
-          '• `/tickets convert [category] [subject] [opener]` — turn the current channel into a ticket + import its recent history.',
-          '• `/tickets delete` — permanently delete a **closed** ticket’s channel.',
-          '• **Settings** — categories, allow-to-open roles, staff roles, custom first-message templates, and Discord category mappings live on the web: ' +
-            `${webUrl}`,
-        ].join('\n'),
-      ),
+    const adminLines = [
+      '### Admin',
+      '• `/tickets category <key>` — move a ticket to another category (also the 🗂️ button).',
+      '• `/tickets convert [category] [subject] [opener]` — turn the current channel into a ticket + import its recent history.',
+      '• `/tickets delete` — permanently delete a **closed** ticket’s channel.',
+      '• **Settings** — categories, allow-to-open roles, staff roles, custom first-message templates, and Discord category mappings live on the web: ' +
+        `${webUrl}`,
+    ]
+    const ttOn = !!business?.ticketToolCategoryIds
+    adminLines.push(
+      ttOn
+        ? '• **TicketTool coexistence** — tickets TicketTool opens under your watched categories appear here and are controllable (rename / add / remove / request-close map to TicketTool’s `$` commands). euphoric never deletes a TicketTool channel.'
+        : `• **TicketTool coexistence** — run another ticket bot? Set its categories + prefix in settings and whitelist this bot (\`${env.DISCORD_CLIENT_ID}\`) in TicketTool → Server Configs → Bot to ingest + control its tickets here.`,
     )
+    blocks.push(new TextDisplayBuilder().setContent(adminLines.join('\n')))
   }
 
   // ---- Sudo ---------------------------------------------------------------

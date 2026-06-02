@@ -86,6 +86,8 @@ export async function updateBusinessSettings(
   patch: {
     discordFallbackCategoryId?: string | null
     adminRoleIds?: string
+    ticketToolCategoryIds?: string
+    ticketToolPrefix?: string
   },
 ): Promise<void> {
   await db
