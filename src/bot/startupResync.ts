@@ -7,8 +7,8 @@ import { businesses } from '../db/schema/businesses'
 import { backfillChannelMessages } from '../services/messageBackfill'
 import {
   closeShadowTicket,
-  ensureShadowTicket,
   parseTicketToolCategoryIds,
+  reconcileBusinessTicketTool,
 } from '../services/ticketToolIngest'
 import { log, persistError } from '../services/logger'
 
@@ -105,21 +105,7 @@ export async function runStartupResync(client: Client): Promise<void> {
     (b) => b.ticketMode === 'tickettool' && parseTicketToolCategoryIds(b).length > 0,
   )
   for (const biz of watchingBiz) {
-    const guild = await client.guilds.fetch(biz.discordGuildId).catch(() => null)
-    if (!guild) continue
-    const catIds = new Set(parseTicketToolCategoryIds(biz))
-    const channels = await guild.channels.fetch().catch(() => null)
-    if (!channels) continue
-    for (const channel of channels.values()) {
-      if (!channel || channel.type !== ChannelType.GuildText) continue
-      if (!channel.parentId || !catIds.has(channel.parentId)) continue
-      try {
-        const id = await ensureShadowTicket(channel as TextChannel, biz)
-        if (id != null) ttIngested++
-      } catch (err) {
-        log.warn('startup resync: tickettool ingest failed', { channelId: channel.id, err: String(err) })
-      }
-    }
+    ttIngested += await reconcileBusinessTicketTool(client, biz)
   }
 
   log.info('startup resync: done', {

@@ -13,6 +13,7 @@ import {
   updateBusinessSettings,
 } from '../../services/settingsService'
 import { getBusinessByGuildId } from '../../services/businessResolver'
+import { reconcileBusinessTicketTool } from '../../services/ticketToolIngest'
 
 export async function handleSettingsButton(interaction: ButtonInteraction): Promise<void> {
   if (!interaction.inGuild() || !interaction.guild) return
@@ -37,10 +38,20 @@ export async function handleSettingsButton(interaction: ButtonInteraction): Prom
     }
     const next = business.ticketMode === 'tickettool' ? 'euphoric' : 'tickettool'
     await updateBusinessSettings(interaction.guild.id, { ticketMode: next })
+
+    // Switching on → back-grab any already-open TicketTool tickets now.
+    let grabbed = 0
+    if (next === 'tickettool') {
+      const fresh = await getBusinessByGuildId(interaction.guild.id)
+      if (fresh) grabbed = await reconcileBusinessTicketTool(interaction.client, fresh).catch(() => 0)
+    }
+
     await interaction.reply({
       content:
         next === 'tickettool'
-          ? '🔁 This team now runs on **TicketTool**. euphoric won’t open its own tickets here — it ingests + controls TicketTool’s. Make sure watched categories + prefix are set, and that this bot is whitelisted in TicketTool → Server Configs → Bot.'
+          ? '🔁 This team now runs on **TicketTool**. euphoric won’t open its own tickets here — it ingests + controls TicketTool’s.' +
+            (grabbed > 0 ? ` Back-grabbed **${grabbed}** open ticket${grabbed === 1 ? '' : 's'}.` : '') +
+            ' Make sure watched categories + prefix are set, and that this bot is whitelisted in TicketTool → Server Configs → Bot.'
           : '🔁 This team now runs on **Euphoric Tickets** (native panels + web). TicketTool ingestion is paused.',
       ephemeral: true,
     })
