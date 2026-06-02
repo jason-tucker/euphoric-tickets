@@ -17,6 +17,40 @@ export function extractAttachments(msg: Message): MessageAttachment[] {
   }))
 }
 
+// Flatten a message's embeds into readable markdown text. TicketTool posts most
+// of its content — welcome cards, logging events, close prompts — as embeds with
+// no plain `content`, so without this those messages ingest as "(no text)". We
+// serialize author/title/description/fields/footer into the body so the web
+// archive shows + searches the real content. (Image-only embeds yield nothing.)
+// Requires the Message Content intent, which the bot already has.
+export function extractEmbedText(msg: Message): string {
+  if (!msg.embeds || msg.embeds.length === 0) return ''
+  const blocks: string[] = []
+  for (const e of msg.embeds) {
+    const seg: string[] = []
+    if (e.author?.name) seg.push(`**${e.author.name}**`)
+    if (e.title) seg.push(`**${e.title}**`)
+    if (e.description) seg.push(e.description)
+    for (const f of e.fields ?? []) {
+      seg.push(`**${f.name}**\n${f.value}`)
+    }
+    if (e.footer?.text) seg.push(`-# ${e.footer.text}`)
+    if (seg.length > 0) blocks.push(seg.join('\n'))
+  }
+  return blocks.join('\n\n').slice(0, 4000)
+}
+
+// The text we store for a message: plain content first, else flattened embeds,
+// else a placeholder noting attachments. Shared by the live relay + backfill so
+// embed-only TicketTool messages render the same both ways.
+export function messageBodyText(msg: Message, attachmentCount: number): string {
+  const content = msg.content ?? ''
+  if (content.length > 0) return content
+  const embedText = extractEmbedText(msg)
+  if (embedText.length > 0) return embedText
+  return attachmentCount > 0 ? '(attachment)' : '(no text)'
+}
+
 // Backfill recent channel history into ticket_messages. Used by /tickets
 // convert (and the P11 startup resync later). Skips bot/webhook/system
 // messages, dedupes by discord_message_id, preserves original timestamps,
@@ -50,9 +84,12 @@ export async function backfillChannelMessages(
     if (msg.author.id === channel.client.user?.id) continue
     if (seen.has(msg.id)) continue
 
-    const content = msg.content ?? ''
     const attachments = extractAttachments(msg)
-    if (content.length === 0 && attachments.length === 0) continue
+    const body = messageBodyText(msg, attachments.length)
+    // Skip only when there's genuinely nothing to store (no text, no embed
+    // content, no attachments). Embed-only messages (TicketTool cards) now have
+    // a real body and are kept.
+    if (body === '(no text)' && attachments.length === 0) continue
     seen.add(msg.id)
 
     const authorUserId = await getOrCreateUserByDiscordId(msg.author.id, {
@@ -63,7 +100,7 @@ export async function backfillChannelMessages(
     rows.push({
       ticketId,
       authorUserId,
-      body: content.length > 0 ? content : '(attachment)',
+      body,
       source,
       discordMessageId: msg.id,
       attachments,

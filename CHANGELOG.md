@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.5.28] — 2026-06-02 — Ingest embed content (TicketTool cards/logs)
+
+### Added
+- **Embeds are now read + archived.** TicketTool posts most of its content — welcome cards, logging events, close prompts — as embeds with no plain `content`, so those messages used to ingest as `(no text)` (and embed-only history was skipped entirely by the backfill). New `extractEmbedText` flattens an embed's author / title / description / fields / footer into readable markdown, and `messageBodyText` is now shared by the live relay (`messageCreate`) and `backfillChannelMessages` so embed-only messages store their real content the same way both ways. Image-only embeds still yield nothing (no text to extract). Uses the Message Content intent, already enabled.
+
+### Note
+- Forward-only: messages already stored as `(no text)` aren't rewritten (the backfill dedupes by `discord_message_id`). New TicketTool tickets + new messages capture embeds going forward.
+
 ## [0.5.27] — 2026-06-02 — Back-grab open TicketTool tickets on category link (paired with web 0.6.46)
 
 ### Added
