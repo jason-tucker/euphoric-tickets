@@ -3,7 +3,7 @@ import { eq, or, sql } from 'drizzle-orm'
 import { db } from '../../db/client'
 import { tickets, ticketMessages } from '../../db/schema'
 import { getOrCreateUserByDiscordId } from '../../services/userResolver'
-import { extractAttachments } from '../../services/messageBackfill'
+import { extractAttachments, messageBodyText } from '../../services/messageBackfill'
 import { getBusinessByGuildId } from '../../services/businessResolver'
 import { ensureShadowTicket, isWatchedTicketToolChannel } from '../../services/ticketToolIngest'
 import { dispatchNotify } from '../../services/notifyBridge'
@@ -131,7 +131,9 @@ async function handleMessage(msg: Message): Promise<void> {
   await db.insert(ticketMessages).values({
     ticketId: row.id,
     authorUserId,
-    body: msg.content.length > 0 ? msg.content : attachments.length > 0 ? '(attachment)' : '(no text)',
+    // Plain content, else flattened embed text (TicketTool posts cards/logs as
+    // embeds), else an attachment/empty placeholder.
+    body: messageBodyText(msg, attachments.length),
     source: isInternal ? 'internal' : 'discord',
     discordMessageId: msg.id,
     attachments,
