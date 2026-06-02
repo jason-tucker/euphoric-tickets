@@ -1,8 +1,12 @@
 import http from 'node:http'
 import type { Client } from 'discord.js'
+import { eq } from 'drizzle-orm'
+import { db } from '../db/client'
+import { businesses } from '../db/schema'
 import { env } from '../config/env'
 import { log } from '../services/logger'
 import { runTicketToolCommand, type TicketToolAction } from '../services/ticketToolControl'
+import { reconcileBusinessTicketTool } from '../services/ticketToolIngest'
 
 // P13 (lantern) — tiny internal HTTP server. Exposes POST /api/internal/dm so
 // the web's notification dispatcher can send a Discord DM through the bot
@@ -19,7 +23,11 @@ function internalSecret(): string {
 export function startInternalHttp(client: Client): void {
   const secret = internalSecret()
 
-  const ROUTES = new Set(['/api/internal/dm', '/api/internal/tickettool/command'])
+  const ROUTES = new Set([
+    '/api/internal/dm',
+    '/api/internal/tickettool/command',
+    '/api/internal/tickettool/reconcile',
+  ])
 
   const server = http.createServer((req, res) => {
     if (req.method !== 'POST' || !req.url || !ROUTES.has(req.url)) {
@@ -50,6 +58,28 @@ export function startInternalHttp(client: Client): void {
               await user.send({ content: content.slice(0, 2000) }).catch(() => {})
             }
             res.writeHead(200, { 'Content-Type': 'application/json' }).end('{"ok":true}')
+            return
+          }
+
+          // POST /api/internal/tickettool/reconcile — the web asks the bot to
+          // back-grab already-open TicketTool tickets right after an admin links
+          // / changes a team's watched categories (instead of waiting for the
+          // next restart). Body: { businessId }.
+          if (url === '/api/internal/tickettool/reconcile') {
+            const { businessId } = JSON.parse(raw) as { businessId?: string }
+            if (!businessId) {
+              res.writeHead(400, { 'Content-Type': 'application/json' }).end('{"ok":false,"error":"businessId required"}')
+              return
+            }
+            // Read the business fresh (not the 60s cache) so just-saved
+            // categories are visible.
+            const [biz] = await db.select().from(businesses).where(eq(businesses.id, businessId)).limit(1)
+            if (!biz) {
+              res.writeHead(404, { 'Content-Type': 'application/json' }).end('{"ok":false,"error":"business not found"}')
+              return
+            }
+            const count = await reconcileBusinessTicketTool(client, biz)
+            res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ ok: true, count }))
             return
           }
 

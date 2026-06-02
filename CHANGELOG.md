@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.5.27] — 2026-06-02 — Back-grab open TicketTool tickets on category link (paired with web 0.6.46)
+
+### Added
+- **On-demand TicketTool reconcile.** Extracted the startup Pass-4 scan into `reconcileBusinessTicketTool(client, business)` and exposed it via a new internal endpoint `POST /api/internal/tickettool/reconcile` (`{ businessId }`, reads the business fresh past the 60s cache). The web settings save calls it after an admin links/changes watched categories, so already-open TicketTool tickets are ingested immediately instead of waiting for a restart. The bot's own `/tickets settings` modal and the 🔁 mode-toggle button run the same reconcile and report how many open tickets were back-grabbed. `backfillChannelMessages` already dedupes, so re-running is safe.
+
 ## [0.5.26] — 2026-06-02 — Per-team ticket mode + TicketTool notes thread + no duplicate status (paired with web 0.6.45)
 
 ### Database

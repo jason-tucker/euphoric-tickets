@@ -19,6 +19,7 @@ import {
   validatePanelCategoriesJson,
 } from '../../services/settingsService'
 import { getBusinessByGuildId } from '../../services/businessResolver'
+import { reconcileBusinessTicketTool } from '../../services/ticketToolIngest'
 
 export async function handleSettingsModalSubmit(interaction: ModalSubmitInteraction): Promise<void> {
   if (!interaction.inGuild() || !interaction.guild) return
@@ -81,6 +82,13 @@ export async function handleSettingsModalSubmit(interaction: ModalSubmitInteract
     }
   }
 
+  // Back-grab already-open TicketTool tickets under the (possibly just-changed)
+  // watched categories. updateBusinessSettings invalidated the cache, so this
+  // re-read sees the new categories. No-op unless the team is in TicketTool mode.
+  let ttReconciled = 0
+  const fresh = await getBusinessByGuildId(interaction.guild.id)
+  if (fresh) ttReconciled = await reconcileBusinessTicketTool(interaction.client, fresh).catch(() => 0)
+
   const summary = [
     '✓ Settings saved.',
     `**Fallback tickets category:** <#${categoryId}>`,
@@ -88,6 +96,9 @@ export async function handleSettingsModalSubmit(interaction: ModalSubmitInteract
       ? `**Staff roles:** ${validStaff.map((id) => `<@&${id}>`).join(' ')}`
       : '**Staff roles:** _(none)_',
     `**Panel categories:** ${panelResult.ok ? panelResult.value.length : 0} configured`,
+    ...(ttReconciled > 0
+      ? [`**TicketTool:** back-grabbed ${ttReconciled} open ticket${ttReconciled === 1 ? '' : 's'} under the watched categories.`]
+      : []),
     '',
     '_Run `/panel refresh` on existing panels to apply the new category buttons._',
     '_Transcript + log channel settings are no longer bot-managed — they\'ll come back when the web schema grows columns for them._',

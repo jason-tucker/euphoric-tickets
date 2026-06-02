@@ -2,6 +2,7 @@ import {
   ChannelType,
   OverwriteType,
   PermissionFlagsBits,
+  type Client,
   type TextChannel,
   type ThreadChannel,
 } from 'discord.js'
@@ -178,6 +179,36 @@ export async function ensureShadowTicket(
   })
   log.info('tickettool: ingested ticket', { ticketId, channelId: channel.id })
   return ticketId
+}
+
+// Scan a business's watched TicketTool categories and ingest every channel
+// under them that we don't have a row for yet — i.e. back-grab already-open
+// TicketTool tickets. Idempotent (ensureShadowTicket dedupes), so safe to call
+// repeatedly. Used by the startup reconcile AND on-demand when an admin links a
+// category (so existing open tickets appear without waiting for a restart or a
+// new message). Returns the number of channels matched under watched categories.
+export async function reconcileBusinessTicketTool(client: Client, business: Business): Promise<number> {
+  if (business.ticketMode !== 'tickettool') return 0
+  const catIds = new Set(parseTicketToolCategoryIds(business))
+  if (catIds.size === 0) return 0
+
+  const guild = await client.guilds.fetch(business.discordGuildId).catch(() => null)
+  if (!guild) return 0
+  const channels = await guild.channels.fetch().catch(() => null)
+  if (!channels) return 0
+
+  let matched = 0
+  for (const channel of channels.values()) {
+    if (!channel || channel.type !== ChannelType.GuildText) continue
+    if (!channel.parentId || !catIds.has(channel.parentId)) continue
+    try {
+      const id = await ensureShadowTicket(channel as TextChannel, business)
+      if (id != null) matched++
+    } catch (err) {
+      log.warn('tickettool: reconcile ingest failed', { channelId: channel.id, err: String(err) })
+    }
+  }
+  return matched
 }
 
 // Mark a TicketTool shadow ticket closed because its channel was deleted
