@@ -102,7 +102,7 @@ export async function runStartupResync(client: Client): Promise<void> {
   // no-ops. (Closing rows whose channel vanished is handled in Pass 1 above.)
   let ttIngested = 0
   const watchingBiz = (await db.select().from(businesses)).filter(
-    (b) => parseTicketToolCategoryIds(b).length > 0,
+    (b) => b.ticketMode === 'tickettool' && parseTicketToolCategoryIds(b).length > 0,
   )
   for (const biz of watchingBiz) {
     const guild = await client.guilds.fetch(biz.discordGuildId).catch(() => null)

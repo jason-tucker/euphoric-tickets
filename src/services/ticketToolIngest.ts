@@ -1,4 +1,10 @@
-import { OverwriteType, PermissionFlagsBits, type TextChannel } from 'discord.js'
+import {
+  ChannelType,
+  OverwriteType,
+  PermissionFlagsBits,
+  type TextChannel,
+  type ThreadChannel,
+} from 'discord.js'
 import { and, eq } from 'drizzle-orm'
 import { db } from '../db/client'
 import { tickets } from '../db/schema'
@@ -29,6 +35,7 @@ export function isWatchedTicketToolChannel(
   business: Business,
   channel: { parentId: string | null },
 ): boolean {
+  if (business.ticketMode !== 'tickettool') return false
   if (!channel.parentId) return false
   return parseTicketToolCategoryIds(business).includes(channel.parentId)
 }
@@ -152,6 +159,16 @@ export async function ensureShadowTicket(
     return 0
   })
 
+  // Adopt TicketTool's private notes thread (if one exists already) as the
+  // ticket's internal-notes thread.
+  try {
+    const active = await channel.threads.fetchActive()
+    const priv = active.threads.find((th) => th.type === ChannelType.PrivateThread)
+    if (priv) await linkInternalThread(priv)
+  } catch (err) {
+    log.warn('tickettool: notes-thread link on ingest failed', { ticketId, err: String(err) })
+  }
+
   await writeAudit({
     businessId: biz.id,
     ticketId,
@@ -193,4 +210,36 @@ export async function closeShadowTicket(channelId: string): Promise<void> {
     metadata: { via: 'tickettool' },
   })
   log.info('tickettool: closed ingested ticket (channel gone)', { ticketId: row.id, channelId })
+}
+
+// TicketTool creates its own private thread for staff notes. Rather than have
+// euphoric create a second thread, adopt TicketTool's: set it as the ticket's
+// internal-notes thread so the relay ingests its messages as internal notes and
+// the web posts staff notes into it. Best-effort — needs the bot to be able to
+// see the private thread (Manage Threads). No-op for non-TicketTool channels or
+// when a thread is already linked.
+export async function linkInternalThread(thread: ThreadChannel): Promise<void> {
+  if (thread.type !== ChannelType.PrivateThread) return
+  const parentId = thread.parentId
+  if (!parentId) return
+
+  const [row] = await db
+    .select({ id: tickets.id, internalThreadId: tickets.discordInternalThreadId })
+    .from(tickets)
+    .where(and(eq(tickets.discordChannelId, parentId), eq(tickets.externalSource, 'tickettool')))
+    .limit(1)
+  if (!row || row.internalThreadId) return
+
+  await db
+    .update(tickets)
+    .set({ discordInternalThreadId: thread.id })
+    .where(eq(tickets.id, row.id))
+  await backfillChannelMessages(thread, row.id, { source: 'internal', limit: 100 }).catch((err) => {
+    log.warn('tickettool: internal-thread backfill failed', { ticketId: row.id, err: String(err) })
+    return 0
+  })
+  log.info('tickettool: linked TicketTool notes thread as internal', {
+    ticketId: row.id,
+    threadId: thread.id,
+  })
 }

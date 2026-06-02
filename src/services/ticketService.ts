@@ -44,6 +44,11 @@ export async function openTicket(opts: {
 
   const business = await getBusinessByGuildId(guild.id)
   if (!business) return { ok: false, reason: NOT_CONFIGURED }
+  // TicketTool-mode teams don't open tickets through euphoric — they're opened
+  // in TicketTool (which euphoric then ingests + controls).
+  if (business.ticketMode === 'tickettool') {
+    return { ok: false, reason: 'This server uses TicketTool — open your ticket from its panel.' }
+  }
 
   const catRows = await db
     .select()

@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.5.26] — 2026-06-02 — Per-team ticket mode + TicketTool notes thread + no duplicate status (paired with web 0.6.45)
+
+### Database
+- Mirrors `businesses.ticket_mode` (`'euphoric'` default / `'tickettool'`). drizzle-kit push adds it; web deploys the canonical column first.
+
+### Added
+- **Per-team ticket mode gates everything.** TicketTool ingestion (`isWatchedTicketToolChannel`) and the startup Pass-4 reconcile now require `ticket_mode='tickettool'` — a team in euphoric mode ignores TicketTool entirely even if categories are set. `openTicket` refuses in TicketTool mode (panel buttons reply "open it in TicketTool"), so euphoric never opens a native ticket for a TicketTool-run team.
+- **`/settings` mode toggle.** The settings panel shows the current ticket system and adds a 🔁 **Switch to TicketTool/Euphoric mode** button (`tk:settings:togglemode`) that flips `ticket_mode` + invalidates the business cache.
+- **Adopt TicketTool's private notes thread.** New `linkInternalThread` + a `threadCreate` event set a TicketTool ticket's `discord_internal_thread_id` to TicketTool's own private thread, so its messages ingest as **internal notes** (source='internal') and euphoric doesn't create a second thread. `ensureShadowTicket` also links an already-existing private thread on ingest. `backfillChannelMessages` now accepts a `ThreadChannel`.
+
+### Changed
+- **euphoric stays quiet on TicketTool control.** The bot already routed `/tickets rename|add|remove|close` to TicketTool's `$` commands; it never posts its own status footer for these — TicketTool's own log message (ingested) is the single source of truth.
+
 ## [0.5.25] — 2026-06-01 — TicketTool coexistence: ingest + control third-party TicketTool tickets (paired with web 0.6.44)
 
 ### Database
