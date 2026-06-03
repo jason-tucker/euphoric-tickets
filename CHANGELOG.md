@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.5.34] — 2026-06-02 — /panel post team picker (post a specific team's panel)
+
+### Added
+- **`/panel post` takes an optional `team:` option (autocompleted).** On a server with more than one team you choose which team's panel to post; the panel is built from that team's categories and stored with its `business_id`, so clicking it opens tickets under that team (pairs with the panel-open resolution from 0.5.33). One-team servers are unchanged (the option is optional); multi-team servers without `team:` get a list of slugs to pick from. **`/panel refresh`** now re-renders from the panel's own team (falling back to the guild default for older panels). New `getBusinessesByGuildId`/`getBusinessBySlugInGuild` resolvers + a shared `team` autocomplete handler.
+
 ## [0.5.33] — 2026-06-02 — Multiple teams per Discord server (resolve team by channel/panel/category)
 
 ### Fixed / Changed
