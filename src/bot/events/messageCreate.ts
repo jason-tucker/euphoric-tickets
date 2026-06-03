@@ -3,9 +3,14 @@ import { eq, or, sql } from 'drizzle-orm'
 import { db } from '../../db/client'
 import { tickets, ticketMessages } from '../../db/schema'
 import { getOrCreateUserByDiscordId } from '../../services/userResolver'
-import { extractAttachments, messageBodyText } from '../../services/messageBackfill'
+import { extractAttachments, extractEmbedText, messageBodyText } from '../../services/messageBackfill'
 import { getBusinessByGuildId } from '../../services/businessResolver'
-import { ensureShadowTicket, isWatchedTicketToolChannel } from '../../services/ticketToolIngest'
+import {
+  applyTicketToolStatus,
+  ensureShadowTicket,
+  isWatchedTicketToolChannel,
+  ticketToolStatusSignal,
+} from '../../services/ticketToolIngest'
 import { dispatchNotify } from '../../services/notifyBridge'
 import { log } from '../../services/logger'
 import { env } from '../../config/env'
@@ -143,6 +148,23 @@ async function handleMessage(msg: Message): Promise<void> {
     .update(tickets)
     .set({ lastActivityAt: sql`now()` })
     .where(eq(tickets.id, row.id))
+
+  // TicketTool coexistence — when TicketTool announces a close/reopen in the
+  // channel, mirror it onto the shadow ticket's status (+ an audit row that
+  // renders as the red/green inline status event on the web). Idempotent.
+  if (row.externalSource === 'tickettool' && !isInternal) {
+    const signal = ticketToolStatusSignal(`${msg.content} ${extractEmbedText(msg)}`)
+    if (signal) {
+      const mentioned = msg.mentions.users.first()
+      const actorUserId = mentioned
+        ? await getOrCreateUserByDiscordId(mentioned.id, {
+            name: mentioned.globalName ?? mentioned.username,
+            image: mentioned.displayAvatarURL(),
+          })
+        : null
+      await applyTicketToolStatus({ ticketId: row.id, businessId: row.businessId, signal, actorUserId })
+    }
+  }
 
   // P13: notify the ticket's opener/assignee of a Discord-origin reply.
   // Internal-thread messages never notify (they're staff-private). TicketTool

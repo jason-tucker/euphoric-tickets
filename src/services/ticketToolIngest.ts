@@ -6,7 +6,7 @@ import {
   type TextChannel,
   type ThreadChannel,
 } from 'discord.js'
-import { and, eq } from 'drizzle-orm'
+import { and, desc, eq } from 'drizzle-orm'
 import { db } from '../db/client'
 import { tickets, ticketMessages } from '../db/schema'
 import { type Business } from '../db/schema/businesses'
@@ -211,6 +211,63 @@ export async function reconcileBusinessTicketTool(client: Client, business: Busi
   return matched
 }
 
+// Detect a TicketTool close/reopen from a message's text (content + flattened
+// embeds). TicketTool posts "Ticket Closed by @X" on close and a reopened
+// message on reopen (both customizable, but these match the defaults). We check
+// reopen first since "reopened" contains "opened". Returns null for anything
+// else — notably TicketTool's "…close this ticket?" confirm prompt, which
+// contains "close" but not "ticket closed".
+export function ticketToolStatusSignal(text: string): 'close' | 'reopen' | null {
+  if (/re-?opened/i.test(text) || /ticket\s+(re)?opened/i.test(text)) return 'reopen'
+  if (/ticket\s+closed/i.test(text) || /closed\s+the\s+ticket/i.test(text)) return 'close'
+  return null
+}
+
+// Apply a detected close/reopen to a shadow ticket. Idempotent: reads current
+// status and only transitions (+ writes the audit row that renders as the
+// red/green inline status event on the web) when it actually changes — so the
+// live relay and the reprocess scan can both call it without double-logging.
+export async function applyTicketToolStatus(opts: {
+  ticketId: number
+  businessId: string
+  signal: 'close' | 'reopen'
+  actorUserId?: string | null
+}): Promise<boolean> {
+  const [cur] = await db
+    .select({ status: tickets.status })
+    .from(tickets)
+    .where(eq(tickets.id, opts.ticketId))
+    .limit(1)
+  if (!cur) return false
+  if (opts.signal === 'close' && cur.status === 'closed') return false
+  if (opts.signal === 'reopen' && cur.status !== 'closed') return false
+
+  if (opts.signal === 'close') {
+    await db
+      .update(tickets)
+      .set({
+        status: 'closed',
+        closedAt: new Date(),
+        closedByUserId: opts.actorUserId ?? null,
+        lastActivityAt: new Date(),
+      })
+      .where(eq(tickets.id, opts.ticketId))
+  } else {
+    await db
+      .update(tickets)
+      .set({ status: 'open', closedAt: null, closedByUserId: null, lastActivityAt: new Date() })
+      .where(eq(tickets.id, opts.ticketId))
+  }
+  await writeAudit({
+    businessId: opts.businessId,
+    ticketId: opts.ticketId,
+    actorUserId: opts.actorUserId ?? null,
+    action: opts.signal === 'close' ? 'closed' : 'reopened',
+    metadata: { via: 'tickettool' },
+  })
+  return true
+}
+
 // One-off maintenance: re-pull embed content for already-ingested TicketTool
 // tickets. Tickets ingested before v0.5.28 either dropped embed-only messages
 // (old backfill skipped them) or stored them as "(no text)" (old live relay).
@@ -225,6 +282,7 @@ export async function reprocessTicketToolEmbeds(
   const rows = await db
     .select({
       id: tickets.id,
+      businessId: tickets.businessId,
       channelId: tickets.discordChannelId,
       internalThreadId: tickets.discordInternalThreadId,
     })
@@ -264,6 +322,24 @@ export async function reprocessTicketToolEmbeds(
           source: 'internal',
         }).catch(() => 0)
       }
+    }
+
+    // Reconcile open/closed status from the most recent TicketTool close/reopen
+    // message now in the archive. applyTicketToolStatus is idempotent, so this
+    // only transitions (and logs) when the current status is wrong.
+    const recent = await db
+      .select({ body: ticketMessages.body })
+      .from(ticketMessages)
+      .where(eq(ticketMessages.ticketId, row.id))
+      .orderBy(desc(ticketMessages.createdAt))
+      .limit(40)
+    for (const m of recent) {
+      const signal = ticketToolStatusSignal(m.body)
+      if (!signal) continue
+      const actorDiscordId = m.body.match(/<@!?(\d+)>/)?.[1]
+      const actorUserId = actorDiscordId ? await getOrCreateUserByDiscordId(actorDiscordId) : null
+      await applyTicketToolStatus({ ticketId: row.id, businessId: row.businessId, signal, actorUserId })
+      break // first match is the latest status-changing message
     }
   }
   log.info('tickettool: reprocessed embeds', { tickets: processed, reinserted })
