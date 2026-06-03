@@ -263,9 +263,12 @@ async function convertHere(interaction: ChatInputCommandInteraction): Promise<vo
     return 0
   })
 
-  await postTicketStatus(channel, `Channel converted to ticket #${row.id} by <@${member.id}>`)
-
   const webUrl = `${env.WEB_BASE_URL}/b/${business.slug}/tickets/${row.id}`
+  await postTicketStatus(
+    channel,
+    `Channel converted to ticket #${row.id} by <@${member.id}> — [${subject}](${webUrl}) for <@${openerUser.id}>`,
+  )
+
   await interaction.editReply(
     `✓ Converted to **ticket #${row.id}** — imported ${imported} message${imported === 1 ? '' : 's'}.\n${webUrl}`,
   )

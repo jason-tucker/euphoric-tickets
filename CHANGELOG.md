@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.5.31] — 2026-06-02 — Richer /tickets convert status line (linked subject + opener)
+
+### Changed
+- **`/tickets convert` posts a richer status footer.** Was `Channel converted to ticket #18 by @Actor`; now `Channel converted to ticket #18 by @Actor — [Subject](web-link) for @Opener` — the subject is a masked link to the web ticket and the opener is shown. The `webUrl` is computed before the post so both the footer and the ephemeral reply use it.
+
 ## [0.5.30] — 2026-06-02 — Auto close/reopen TicketTool tickets from their status messages (paired with web 0.6.48)
 
 ### Added
