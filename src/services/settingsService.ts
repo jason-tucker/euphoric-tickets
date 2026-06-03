@@ -48,8 +48,11 @@ export async function getStaffRoleIds(guildId: string): Promise<string[]> {
     .filter(Boolean)
 }
 
-export async function getPanelCategories(guildId: string): Promise<PanelCategory[]> {
-  const biz = await getBusinessByGuildId(guildId)
+export async function getPanelCategories(
+  guildId: string,
+  business?: { id: string } | null,
+): Promise<PanelCategory[]> {
+  const biz = business ?? (await getBusinessByGuildId(guildId))
   if (!biz) return DEFAULT_PANEL_CATEGORIES
   const rows = await db
     .select({

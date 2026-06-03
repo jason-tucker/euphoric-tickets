@@ -1,4 +1,4 @@
-import { eq } from 'drizzle-orm'
+import { and, asc, eq } from 'drizzle-orm'
 import { db } from '../db/client'
 import { businesses, type Business } from '../db/schema/businesses'
 
@@ -28,4 +28,24 @@ export async function getBusinessByGuildId(guildId: string): Promise<Business | 
 export function invalidateBusinessCache(guildId?: string): void {
   if (guildId) cache.delete(guildId)
   else cache.clear()
+}
+
+// All teams (businesses) in a guild — a guild may host more than one. Uncached
+// (used only by the panel/settings commands + their autocomplete). Oldest first
+// so the default team (what getBusinessByGuildId tends to pick) leads.
+export async function getBusinessesByGuildId(guildId: string): Promise<Business[]> {
+  return db
+    .select()
+    .from(businesses)
+    .where(eq(businesses.discordGuildId, guildId))
+    .orderBy(asc(businesses.createdAt))
+}
+
+export async function getBusinessBySlugInGuild(guildId: string, slug: string): Promise<Business | null> {
+  const rows = await db
+    .select()
+    .from(businesses)
+    .where(and(eq(businesses.discordGuildId, guildId), eq(businesses.slug, slug)))
+    .limit(1)
+  return rows[0] ?? null
 }
