@@ -1,6 +1,6 @@
 import { and, asc, eq } from 'drizzle-orm'
 import { db } from '../db/client'
-import { businesses } from '../db/schema/businesses'
+import { businesses, type Business } from '../db/schema/businesses'
 import { ticketCategories } from '../db/schema/ticketCategories'
 import { getBusinessByGuildId, invalidateBusinessCache } from './businessResolver'
 
@@ -21,8 +21,8 @@ export const DEFAULT_PANEL_CATEGORIES: PanelCategory[] = [
 // arrive. The bot used to be single-tenant and read raw key/value rows;
 // now everything routes through `businesses` keyed on the Discord guild.
 
-export async function getCategoryId(guildId: string): Promise<string | null> {
-  const biz = await getBusinessByGuildId(guildId)
+export async function getCategoryId(guildId: string, business?: Business | null): Promise<string | null> {
+  const biz = business ?? (await getBusinessByGuildId(guildId))
   return biz?.discordFallbackCategoryId ?? null
 }
 
@@ -39,8 +39,8 @@ export async function getLogChannelId(_guildId: string): Promise<string | null> 
   return null
 }
 
-export async function getStaffRoleIds(guildId: string): Promise<string[]> {
-  const biz = await getBusinessByGuildId(guildId)
+export async function getStaffRoleIds(guildId: string, business?: Business | null): Promise<string[]> {
+  const biz = business ?? (await getBusinessByGuildId(guildId))
   if (!biz?.adminRoleIds) return []
   return biz.adminRoleIds
     .split(',')
@@ -93,11 +93,16 @@ export async function updateBusinessSettings(
     ticketToolCategoryIds?: string
     ticketToolPrefix?: string
   },
+  business?: Business | null,
 ): Promise<void> {
+  const biz = business ?? (await getBusinessByGuildId(guildId))
+  if (!biz) return
+  // Scope by business id — a guild can host multiple teams, so updating by
+  // guild id would clobber every team's settings at once.
   await db
     .update(businesses)
     .set({ ...patch })
-    .where(eq(businesses.discordGuildId, guildId))
+    .where(eq(businesses.id, biz.id))
   invalidateBusinessCache(guildId)
 }
 
@@ -107,8 +112,9 @@ export async function updateBusinessSettings(
 export async function replaceTicketCategories(
   guildId: string,
   cats: PanelCategory[],
+  business?: Business | null,
 ): Promise<{ ok: true } | { ok: false; reason: string }> {
-  const biz = await getBusinessByGuildId(guildId)
+  const biz = business ?? (await getBusinessByGuildId(guildId))
   if (!biz) {
     return {
       ok: false,
