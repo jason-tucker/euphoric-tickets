@@ -16,11 +16,17 @@ import {
   handleChangeCategorySelect,
 } from '../../interactions/buttons/ticketChangeCategory'
 import { handleSettingsModalSubmit } from '../../interactions/modals/settingsModal'
+import { handleTeamAutocomplete } from '../../interactions/teamAutocomplete'
 import { log } from '../../services/logger'
 
 export function registerInteractionCreate(client: Client): void {
   client.on('interactionCreate', async (interaction: Interaction) => {
     try {
+      if (interaction.isAutocomplete()) {
+        // Only the shared `team` option uses autocomplete today.
+        return await handleTeamAutocomplete(interaction)
+      }
+
       if (interaction.isChatInputCommand()) {
         if (interaction.commandName === panelData.name) return await executePanel(interaction)
         if (interaction.commandName === ticketsData.name) return await executeTickets(interaction)
