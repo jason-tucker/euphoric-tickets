@@ -266,7 +266,7 @@ async function convertHere(interaction: ChatInputCommandInteraction): Promise<vo
   const webUrl = `${env.WEB_BASE_URL}/b/${business.slug}/tickets/${row.id}`
   await postTicketStatus(
     channel,
-    `Channel converted to ticket #${row.id} by <@${member.id}> — [${subject}](${webUrl}) for <@${openerUser.id}>`,
+    `Channel converted to ticket #${row.id} by <@${member.id}> — [${subject}](<${webUrl}>) for <@${openerUser.id}>`,
   )
 
   await interaction.editReply(

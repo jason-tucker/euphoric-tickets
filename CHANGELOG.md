@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.5.32] — 2026-06-02 — /tickets convert link no longer embeds
+
+### Changed
+- The web link in the `/tickets convert` status footer is now wrapped `[Subject](<url>)` so Discord suppresses the link-preview embed on that footer.
+
 ## [0.5.31] — 2026-06-02 — Richer /tickets convert status line (linked subject + opener)
 
 ### Changed
