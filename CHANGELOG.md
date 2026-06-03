@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.5.33] — 2026-06-02 — Multiple teams per Discord server (resolve team by channel/panel/category)
+
+### Fixed / Changed
+- **A Discord server can now host more than one team (business).** The bot used to resolve a single team per guild (`getBusinessByGuildId`, `LIMIT 1`), so a second team's categories were invisible — e.g. `/tickets convert clients` replied "Unknown category" when `clients` lived on a different team in the same server. Resolution is now per-channel/panel/category:
+  - **`/tickets convert <key>`** looks the category up across **every** team in the guild and creates the ticket under the team that owns it (admin check + web link follow that team).
+  - **In-channel `/tickets …` commands** resolve the ticket's **own** team (`resolveTicketAccessByChannel` now returns the ticket's business), so staff-role checks and audit attribution use the right team even when it isn't the guild default.
+  - **Panel buttons** open under the team that owns that panel (resolved from `ticket_panels` by message id), not the guild default. `openTicket` accepts an optional `business`.
+- Known follow-up: posting a *new* panel (`/panel post`) and the bot's `/tickets settings` still target the guild's default team — manage a secondary team's panel/settings from the web (`/b/<slug>/…`) for now, or a team selector can be added.
+
 ## [0.5.32] — 2026-06-02 — /tickets convert link no longer embeds
 
 ### Changed

@@ -39,10 +39,14 @@ export async function openTicket(opts: {
   guild: Guild
   opener: GuildMember
   categoryKey: string
+  // The team to open under. Passed by the panel button (panels are per-team) so
+  // a multi-team guild opens under the panel's team; falls back to the guild's
+  // default team when omitted.
+  business?: ResolvedBusiness
 }): Promise<OpenResult> {
   const { guild, opener, categoryKey } = opts
 
-  const business = await getBusinessByGuildId(guild.id)
+  const business = opts.business ?? (await getBusinessByGuildId(guild.id))
   if (!business) return { ok: false, reason: NOT_CONFIGURED }
   // TicketTool-mode teams don't open tickets through euphoric — they're opened
   // in TicketTool (which euphoric then ingests + controls).

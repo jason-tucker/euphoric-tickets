@@ -17,7 +17,7 @@ import { eq } from 'drizzle-orm'
 import { db } from '../db/client'
 import { ticketCategories, type TicketCategory } from '../db/schema/ticketCategories'
 import { tickets, type Ticket } from '../db/schema/tickets'
-import { type Business } from '../db/schema/businesses'
+import { businesses, type Business } from '../db/schema/businesses'
 import { isSudoUser } from './sudoService'
 import { getDiscordIdForUserId } from './userResolver'
 
@@ -124,9 +124,17 @@ export async function resolveTicketAccessByChannel(
   member: GuildMember,
   business: Business,
   channelId: string,
-): Promise<{ ticket: Ticket; access: TicketAccess } | null> {
+): Promise<{ ticket: Ticket; access: TicketAccess; business: Business } | null> {
   const [t] = await db.select().from(tickets).where(eq(tickets.discordChannelId, channelId)).limit(1)
   if (!t) return null
-  const access = await resolveTicketAccess(member, business, t)
-  return { ticket: t, access }
+  // A guild can host multiple teams — the ticket may belong to a different team
+  // than the guild's default. Resolve access (staff/admin roles, category) and
+  // attribute the ticket against its OWN business.
+  let biz = business
+  if (t.businessId !== business.id) {
+    const [owner] = await db.select().from(businesses).where(eq(businesses.id, t.businessId)).limit(1)
+    if (owner) biz = owner
+  }
+  const access = await resolveTicketAccess(member, biz, t)
+  return { ticket: t, access, business: biz }
 }
