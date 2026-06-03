@@ -18,6 +18,7 @@ import { and, asc, eq, ne } from 'drizzle-orm'
 import { db } from '../db/client'
 import { tickets, type Ticket } from '../db/schema/tickets'
 import { ticketCategories } from '../db/schema/ticketCategories'
+import { businesses } from '../db/schema/businesses'
 import { isSudoUser } from '../services/sudoService'
 import {
   getCategoryId,
@@ -173,17 +174,16 @@ async function changeCategoryHere(interaction: ChatInputCommandInteraction): Pro
 // can post user-spoofed replies into the channel.
 async function convertHere(interaction: ChatInputCommandInteraction): Promise<void> {
   const member = await interaction.guild!.members.fetch(interaction.user.id)
-  const business = await getBusinessByGuildId(interaction.guild!.id)
+  // A guild may host more than one team (business). Without a category key we use
+  // the default team; WITH a key we resolve the team that OWNS that category, so
+  // convert works for every team in the server — not just the first one.
+  let business = await getBusinessByGuildId(interaction.guild!.id)
   if (!business) {
     await interaction.reply({
       content:
         'This server is not configured as a team — ask an admin to create one at https://tickets.euphoric.fm/admin.',
       ephemeral: true,
     })
-    return
-  }
-  if (!isAdminForBusiness(member, business)) {
-    await interaction.reply({ content: 'Only admins can convert a channel into a ticket.', ephemeral: true })
     return
   }
 
@@ -205,20 +205,28 @@ async function convertHere(interaction: ChatInputCommandInteraction): Promise<vo
 
   await interaction.deferReply({ ephemeral: true })
 
-  // Optional category by key.
+  // Optional category by key — looked up across EVERY team in this guild; the
+  // owning team becomes the ticket's business.
   const catKey = interaction.options.getString('category')?.trim().toLowerCase() || null
   let categoryId: string | null = null
   if (catKey) {
-    const [cat] = await db
-      .select({ id: ticketCategories.id })
+    const [hit] = await db
+      .select({ catId: ticketCategories.id, biz: businesses })
       .from(ticketCategories)
-      .where(and(eq(ticketCategories.businessId, business.id), eq(ticketCategories.key, catKey)))
+      .innerJoin(businesses, eq(businesses.id, ticketCategories.businessId))
+      .where(and(eq(businesses.discordGuildId, interaction.guild!.id), eq(ticketCategories.key, catKey)))
       .limit(1)
-    if (!cat) {
+    if (!hit) {
       await interaction.editReply(`Unknown category \`${catKey}\`. Leave it blank or use an existing key.`)
       return
     }
-    categoryId = cat.id
+    categoryId = hit.catId
+    business = hit.biz
+  }
+
+  if (!isAdminForBusiness(member, business)) {
+    await interaction.editReply('Only admins can convert a channel into a ticket.')
+    return
   }
 
   // Opener: provided user or the invoker.
@@ -303,7 +311,9 @@ async function loadCtx(
     await interaction.reply({ content: 'This channel is not a ticket.', ephemeral: true })
     return null
   }
-  return { member, business, ticket: res.ticket, access: res.access }
+  // res.business is the ticket's OWN team (may differ from the guild default in a
+  // multi-team server) — use it so audits + the web link attribute correctly.
+  return { member, business: res.business, ticket: res.ticket, access: res.access }
 }
 
 // TicketTool-ingested tickets: euphoric must never touch the channel itself.
