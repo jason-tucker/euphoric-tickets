@@ -28,7 +28,7 @@ import {
 import { changeTicketCategory, claimTicket, closeTicket } from '../services/ticketService'
 import { runTicketToolCommand, type TicketToolAction } from '../services/ticketToolControl'
 import { buildCloseConfirm } from '../services/ticketRenderer'
-import { getBusinessByGuildId } from '../services/businessResolver'
+import { getBusinessByGuildId, getBusinessesByGuildId } from '../services/businessResolver'
 import { getDiscordIdForUserId, getOrCreateUserByDiscordId } from '../services/userResolver'
 import {
   isAdminForBusiness,
@@ -43,7 +43,18 @@ import { env } from '../config/env'
 export const data = new SlashCommandBuilder()
   .setName('tickets')
   .setDescription('Ticket controls')
-  .addSubcommand((sc) => sc.setName('settings').setDescription('View/edit ticket settings (sudo)'))
+  .addSubcommand((sc) =>
+    sc
+      .setName('settings')
+      .setDescription('View/edit ticket settings (sudo)')
+      .addStringOption((opt) =>
+        opt
+          .setName('team')
+          .setDescription('Which team (only needed when this server hosts more than one)')
+          .setAutocomplete(true)
+          .setRequired(false),
+      ),
+  )
   .addSubcommand((sc) => sc.setName('claim').setDescription('Claim the current ticket'))
   .addSubcommand((sc) => sc.setName('unclaim').setDescription('Release the current ticket back to the open pool'))
   .addSubcommand((sc) =>
@@ -368,11 +379,38 @@ async function openSettings(interaction: ChatInputCommandInteraction): Promise<v
 
   await interaction.deferReply({ ephemeral: true })
 
-  const [catId, staffIds, panelCats, business] = await Promise.all([
-    getCategoryId(interaction.guild!.id),
-    getStaffRoleIds(interaction.guild!.id),
-    getPanelCategories(interaction.guild!.id),
-    getBusinessByGuildId(interaction.guild!.id),
+  // Resolve which team's settings to show — servers can host more than one.
+  const teamSlug = interaction.options.getString('team')
+  const teams = await getBusinessesByGuildId(interaction.guild!.id)
+  if (teams.length === 0) {
+    await interaction.editReply(
+      'This server is not configured as a team — create one at https://tickets.euphoric.fm/admin.',
+    )
+    return
+  }
+  let business = teams[0]
+  if (teamSlug) {
+    const found = teams.find((b) => b.slug === teamSlug)
+    if (!found) {
+      await interaction.editReply(
+        `No team \`${teamSlug}\` in this server. Teams: ${teams.map((b) => `\`${b.slug}\``).join(', ')}.`,
+      )
+      return
+    }
+    business = found
+  } else if (teams.length > 1) {
+    await interaction.editReply(
+      `This server hosts multiple teams — re-run with \`team:\` set to one of: ${teams
+        .map((b) => `\`${b.slug}\``)
+        .join(', ')}.`,
+    )
+    return
+  }
+
+  const [catId, staffIds, panelCats] = await Promise.all([
+    getCategoryId(interaction.guild!.id, business),
+    getStaffRoleIds(interaction.guild!.id, business),
+    getPanelCategories(interaction.guild!.id, business),
   ])
 
   const ttCats = (business?.ticketToolCategoryIds ?? '')
@@ -382,7 +420,7 @@ async function openSettings(interaction: ChatInputCommandInteraction): Promise<v
 
   const mode = business?.ticketMode === 'tickettool' ? 'TicketTool' : 'Euphoric Tickets'
   const lines = [
-    '## ⚙️ Ticket Settings',
+    `## ⚙️ Ticket Settings — ${business.name}`,
     `**Ticket system:** ${mode}`,
     `**Fallback tickets category:** ${catId ? `<#${catId}> (\`${catId}\`)` : '_(not set)_'}`,
     `**Staff roles:** ${staffIds.length ? staffIds.map((id) => `<@&${id}>`).join(' ') : '_(none — only opener can see ticket)_'}`,
@@ -403,14 +441,16 @@ async function openSettings(interaction: ChatInputCommandInteraction): Promise<v
     .addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true))
     .addTextDisplayComponents(new TextDisplayBuilder().setContent('### Panel categories JSON\n' + catJsonPreview))
 
+  // Carry the team slug on the buttons so Edit / mode-toggle act on THIS team
+  // (servers can host several).
   const editBtn = new ButtonBuilder()
-    .setCustomId('tk:settings:edit')
+    .setCustomId(`tk:settings:edit:${business.slug}`)
     .setLabel('Edit settings')
     .setStyle(ButtonStyle.Primary)
     .setEmoji('✏️')
 
   const toggleBtn = new ButtonBuilder()
-    .setCustomId('tk:settings:togglemode')
+    .setCustomId(`tk:settings:togglemode:${business.slug}`)
     .setLabel(business?.ticketMode === 'tickettool' ? 'Switch to Euphoric mode' : 'Switch to TicketTool mode')
     .setStyle(ButtonStyle.Secondary)
     .setEmoji('🔁')

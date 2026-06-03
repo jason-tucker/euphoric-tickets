@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.5.35] — 2026-06-02 — /tickets settings team picker (+ fix multi-team settings clobber)
+
+### Added
+- **`/tickets settings` takes an optional `team:` option (autocompleted)** so you can view/edit a specific team's settings on a multi-team server. The team slug is carried through the Edit/mode-toggle buttons and the edit modal, so saving + the 🔁 toggle act on the chosen team. One-team servers are unchanged; multi-team without `team:` lists the slugs.
+
+### Fixed
+- **`updateBusinessSettings` no longer clobbers every team in the guild.** It updated `WHERE discord_guild_id = …`, so on a multi-team server saving one team's settings overwrote them all. It (and `replaceTicketCategories`, `getCategoryId`, `getStaffRoleIds`, `getPanelCategories`) are now scoped to a specific team (updating by `business.id`), defaulting to the guild's team when none is passed.
+
 ## [0.5.34] — 2026-06-02 — /panel post team picker (post a specific team's panel)
 
 ### Added

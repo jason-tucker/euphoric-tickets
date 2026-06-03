@@ -12,7 +12,7 @@ import {
   getStaffRoleIds,
   updateBusinessSettings,
 } from '../../services/settingsService'
-import { getBusinessByGuildId } from '../../services/businessResolver'
+import { getBusinessByGuildId, getBusinessBySlugInGuild } from '../../services/businessResolver'
 import { reconcileBusinessTicketTool } from '../../services/ticketToolIngest'
 
 export async function handleSettingsButton(interaction: ButtonInteraction): Promise<void> {
@@ -24,25 +24,29 @@ export async function handleSettingsButton(interaction: ButtonInteraction): Prom
     return
   }
 
-  const action = interaction.customId.slice('tk:settings:'.length)
+  // customId is `tk:settings:<action>[:<teamSlug>]` — the slug scopes the action
+  // to a specific team (servers can host more than one). Legacy buttons omit it.
+  const [action, slug] = interaction.customId.slice('tk:settings:'.length).split(':')
+  const business = slug
+    ? await getBusinessBySlugInGuild(interaction.guild.id, slug)
+    : await getBusinessByGuildId(interaction.guild.id)
+  if (!business) {
+    await interaction.reply({
+      content: 'This server is not configured as a team — create one at https://tickets.euphoric.fm/admin.',
+      ephemeral: true,
+    })
+    return
+  }
 
   // Flip the ticket system for this team between euphoric-native and TicketTool.
   if (action === 'togglemode') {
-    const business = await getBusinessByGuildId(interaction.guild.id)
-    if (!business) {
-      await interaction.reply({
-        content: 'This server is not configured as a team — create one at https://tickets.euphoric.fm/admin.',
-        ephemeral: true,
-      })
-      return
-    }
     const next = business.ticketMode === 'tickettool' ? 'euphoric' : 'tickettool'
-    await updateBusinessSettings(interaction.guild.id, { ticketMode: next })
+    await updateBusinessSettings(interaction.guild.id, { ticketMode: next }, business)
 
     // Switching on → back-grab any already-open TicketTool tickets now.
     let grabbed = 0
     if (next === 'tickettool') {
-      const fresh = await getBusinessByGuildId(interaction.guild.id)
+      const fresh = await getBusinessBySlugInGuild(interaction.guild.id, business.slug)
       if (fresh) grabbed = await reconcileBusinessTicketTool(interaction.client, fresh).catch(() => 0)
     }
 
@@ -63,18 +67,17 @@ export async function handleSettingsButton(interaction: ButtonInteraction): Prom
     return
   }
 
-  // Source of truth now lives on `businesses` / `ticket_categories`.
-  // Transcript + log channel rows were dropped — see settingsService TODO.
-  const [catId, staffIds, panelCats, business] = await Promise.all([
-    getCategoryId(interaction.guild.id),
-    getStaffRoleIds(interaction.guild.id),
-    getPanelCategories(interaction.guild.id),
-    getBusinessByGuildId(interaction.guild.id),
+  // Source of truth lives on `businesses` / `ticket_categories`, scoped to the
+  // resolved team.
+  const [catId, staffIds, panelCats] = await Promise.all([
+    getCategoryId(interaction.guild.id, business),
+    getStaffRoleIds(interaction.guild.id, business),
+    getPanelCategories(interaction.guild.id, business),
   ])
 
   const modal = new ModalBuilder()
-    .setCustomId('tk:settings_modal:all')
-    .setTitle('Edit Ticket Settings')
+    .setCustomId(`tk:settings_modal:${business.slug}`)
+    .setTitle(`Edit Settings — ${business.name}`.slice(0, 45))
 
   const categoryInput = new TextInputBuilder()
     .setCustomId('category_id')

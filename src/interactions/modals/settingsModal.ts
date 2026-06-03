@@ -18,7 +18,7 @@ import {
   updateBusinessSettings,
   validatePanelCategoriesJson,
 } from '../../services/settingsService'
-import { getBusinessByGuildId } from '../../services/businessResolver'
+import { getBusinessByGuildId, getBusinessBySlugInGuild } from '../../services/businessResolver'
 import { reconcileBusinessTicketTool } from '../../services/ticketToolIngest'
 
 export async function handleSettingsModalSubmit(interaction: ModalSubmitInteraction): Promise<void> {
@@ -32,9 +32,13 @@ export async function handleSettingsModalSubmit(interaction: ModalSubmitInteract
 
   await interaction.deferReply({ ephemeral: true })
 
-  // Require an existing business row — the bot doesn't bootstrap one
-  // from scratch. Admins do that via the web at /admin.
-  const business = await getBusinessByGuildId(interaction.guild.id)
+  // customId is `tk:settings_modal:<teamSlug>` (legacy: `…:all`). Scope the save
+  // to that team; a guild can host several.
+  const slug = interaction.customId.slice('tk:settings_modal:'.length)
+  const business =
+    slug && slug !== 'all'
+      ? await getBusinessBySlugInGuild(interaction.guild.id, slug)
+      : await getBusinessByGuildId(interaction.guild.id)
   if (!business) {
     await interaction.editReply(
       'This server is not configured as a team — create one at https://tickets.euphoric.fm/admin.',
@@ -67,15 +71,19 @@ export async function handleSettingsModalSubmit(interaction: ModalSubmitInteract
     return
   }
 
-  await updateBusinessSettings(interaction.guild.id, {
-    discordFallbackCategoryId: categoryId,
-    adminRoleIds: validStaff.join(','),
-    ticketToolCategoryIds: validTtCats.join(','),
-    ticketToolPrefix: ttPrefixRaw || '$',
-  })
+  await updateBusinessSettings(
+    interaction.guild.id,
+    {
+      discordFallbackCategoryId: categoryId,
+      adminRoleIds: validStaff.join(','),
+      ticketToolCategoryIds: validTtCats.join(','),
+      ticketToolPrefix: ttPrefixRaw || '$',
+    },
+    business,
+  )
 
   if (panelResult.ok) {
-    const result = await replaceTicketCategories(interaction.guild.id, panelResult.value)
+    const result = await replaceTicketCategories(interaction.guild.id, panelResult.value, business)
     if (!result.ok) {
       await interaction.editReply(result.reason)
       return
@@ -83,10 +91,9 @@ export async function handleSettingsModalSubmit(interaction: ModalSubmitInteract
   }
 
   // Back-grab already-open TicketTool tickets under the (possibly just-changed)
-  // watched categories. updateBusinessSettings invalidated the cache, so this
-  // re-read sees the new categories. No-op unless the team is in TicketTool mode.
+  // watched categories — re-read THIS team fresh so it sees the new categories.
   let ttReconciled = 0
-  const fresh = await getBusinessByGuildId(interaction.guild.id)
+  const fresh = await getBusinessBySlugInGuild(interaction.guild.id, business.slug)
   if (fresh) ttReconciled = await reconcileBusinessTicketTool(interaction.client, fresh).catch(() => 0)
 
   const summary = [
