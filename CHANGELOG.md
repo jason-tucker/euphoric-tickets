@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.5.30] — 2026-06-02 — Auto close/reopen TicketTool tickets from their status messages (paired with web 0.6.48)
+
+### Added
+- **TicketTool close/reopen now flips the shadow ticket's status.** Previously euphoric only marked a TicketTool ticket closed when its channel was *deleted* — but `$close` usually just locks the channel and posts "Ticket Closed by @X". `ticketToolStatusSignal()` detects TicketTool's close/reopen messages (content + flattened embeds; reopen checked first since "reopened" contains "opened"; the "…close this ticket?" confirm is ignored), and `applyTicketToolStatus()` sets `status` (closed → `closedAt`/`closedByUserId` from the message's @mention, reopen → back to open) and writes a `closed`/`reopened` audit row (which renders as the red/green inline status event on the web). Idempotent — only transitions when the status actually changes. Wired into the live relay (`messageCreate`) and into the embed-reprocess pass, which now also reconciles each ticket's status from the most recent close/reopen message so already-ingested tickets fix up.
+
 ## [0.5.29] — 2026-06-02 — One-off: reprocess embeds for already-ingested TicketTool tickets
 
 ### Added
