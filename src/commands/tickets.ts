@@ -31,6 +31,7 @@ import { buildCloseConfirm } from '../services/ticketRenderer'
 import { getBusinessByGuildId, getBusinessesByGuildId } from '../services/businessResolver'
 import { getDiscordIdForUserId, getOrCreateUserByDiscordId } from '../services/userResolver'
 import {
+  canManageGuildSettings,
   isAdminForBusiness,
   resolveTicketAccessByChannel,
   type TicketAccess,
@@ -372,16 +373,19 @@ async function routeExternalTicket(
 
 async function openSettings(interaction: ChatInputCommandInteraction): Promise<void> {
   const member = await interaction.guild!.members.fetch(interaction.user.id)
-  if (!isSudoUser(member)) {
-    await interaction.reply({ content: 'Sudo only.', ephemeral: true })
+  // Resolve which team's settings to show — servers can host more than one.
+  const teams = await getBusinessesByGuildId(interaction.guild!.id)
+  if (!canManageGuildSettings(member, teams)) {
+    await interaction.reply({
+      content: 'You need **Manage Server** (or a Ticket Master role) to edit settings.',
+      ephemeral: true,
+    })
     return
   }
 
   await interaction.deferReply({ ephemeral: true })
 
-  // Resolve which team's settings to show — servers can host more than one.
   const teamSlug = interaction.options.getString('team')
-  const teams = await getBusinessesByGuildId(interaction.guild!.id)
   if (teams.length === 0) {
     await interaction.editReply(
       'This server is not configured as a team — create one at https://tickets.euphoric.fm/admin.',

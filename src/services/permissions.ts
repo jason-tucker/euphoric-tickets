@@ -38,13 +38,29 @@ export function staffRoleIdsForCategory(
   return parseCsv(business.adminRoleIds)
 }
 
-// True if the member counts as admin/manager of this business. Guild
-// ADMINISTRATOR overrides everything (matches the web's deriveLevel).
+// True if the member counts as admin/manager of this business. Discord's
+// Manage Server permission (which Administrator and the guild owner subsume)
+// grants admin, matching the web's deriveLevel. A "Ticket Master" role — any
+// role in the team's admin_role_ids — also grants it.
 export function isAdminForBusiness(member: GuildMember, business: Business): boolean {
   if (isSudoUser(member)) return true
-  if (member.permissions.has(PermissionFlagsBits.Administrator)) return true
+  // ManageGuild's `.has()` returns true for Administrator + the guild owner too.
+  if (member.permissions.has(PermissionFlagsBits.ManageGuild)) return true
   const adminRoleIds = parseCsv(business.adminRoleIds)
   return adminRoleIds.some((id) => member.roles.cache.has(id))
+}
+
+// Gate for the panel + team-settings surfaces (the /panel and /tickets settings
+// commands and their Edit buttons / modals). A member may manage a guild's
+// panels and team settings when they're sudo, hold Discord's Manage Server
+// permission (which Administrator and the guild owner subsume), or hold a
+// "Ticket Master" role — any team's admin_role_ids — in this guild. Pass the
+// guild's teams so a Ticket Master of any one of them passes on a multi-team
+// server.
+export function canManageGuildSettings(member: GuildMember, teams: Business[]): boolean {
+  if (isSudoUser(member)) return true
+  if (member.permissions.has(PermissionFlagsBits.ManageGuild)) return true
+  return teams.some((b) => parseCsv(b.adminRoleIds).some((id) => member.roles.cache.has(id)))
 }
 
 // True if the member can act as staff on this ticket's category. Always

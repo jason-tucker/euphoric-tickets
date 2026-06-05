@@ -9,6 +9,7 @@ import {
 import { env } from '../../config/env'
 import { log } from '../../services/logger'
 import { runStartupResync } from '../startupResync'
+import { backfillBusinessesForGuilds } from '../../services/businessProvision'
 
 const SUPPRESS_NOTIFICATIONS = 1 << 12
 
@@ -23,6 +24,12 @@ export function registerReadyEvent(client: Client): void {
     // P11: reconcile DB ↔ Discord + backfill missed messages. Best-effort —
     // never let a resync failure stop the bot from coming up.
     void runStartupResync(c).catch((err) => log.error('startup resync threw', { err: String(err) }))
+
+    // Auto-provision a team row for every guild the bot is already in (guilds
+    // joined while running are handled by the guildCreate event). Best-effort.
+    void backfillBusinessesForGuilds(c.guilds.cache.values()).catch((err) =>
+      log.error('business backfill threw', { err: String(err) }),
+    )
 
     if (env.BOT_OWNER_ID) {
       const owner = await c.users.fetch(env.BOT_OWNER_ID).catch(() => null)
