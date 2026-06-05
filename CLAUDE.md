@@ -1,14 +1,23 @@
 # Euphoric Tickets — AI Coding Instructions
 
-See `/home/botuser/projects/claude-all.md` for VPS constraints, systemd setup,
-Discord.js patterns, Components V2, and database conventions that apply to all bots.
+See `/home/botuser/projects/claude-all.md` for VPS constraints, Discord.js
+patterns, Components V2, and database conventions that apply to all bots.
+
+This bot is **not** a standalone app. It is the Discord half of the Euphoric
+Tickets system; the [`euphoric-tickets-web`](https://github.com/jason-tucker/euphoric-tickets-web)
+companion is the other half. Both are front-ends over **one shared Postgres
+database** — anything you can do on the web you can do here, and vice-versa.
+See `README.md` for the full architecture; this file is the working agreement.
 
 ---
 
 ## Mandatory rules
 
 ### 1. Never compile TypeScript on the VPS
-`pnpm build` / `pnpm typecheck` / `tsc` OOM the box. Compilation happens in GitHub Actions; the VPS pulls the pre-built GHCR image. If you suspect a type error, describe it in chat.
+`pnpm build` / `pnpm typecheck` / `tsc` OOM the box. Compilation happens in
+GitHub Actions; the VPS pulls the pre-built GHCR image. Run `tsc --noEmit`
+**locally** before pushing — a type error silently blocks **all** deploys (CI
+builds the image, not the VPS). If you suspect a type error, describe it in chat.
 
 ### 2. Always update `CHANGELOG.md`
 Per-PR semver bump under a dated section. Footer reads `v<x.y.z> · <sha>`. No `[Unreleased]`.
@@ -16,34 +25,67 @@ Per-PR semver bump under a dated section. Footer reads `v<x.y.z> · <sha>`. No `
 ### 3. Every PR or work unit must have a GitHub Projects item
 Project board #9 — `Euphoric Tickets`. Add an item before opening the PR.
 
-### 4. `drizzle-kit push` — no SQL migrations
-Schema lives in `src/db/schema/*.ts`. The Docker entrypoint runs `drizzle-kit push --force` against the compiled `dist/db/schema/index.js`. No `src/db/migrations/*.sql` files; no journal to keep in sync.
+### 4. The web owns the schema — the bot only connects
+Schema lives in `src/db/schema/*.ts` and is **mirrored** from the web repo.
+The **web** app runs `drizzle-kit push` on its own container start and is the
+single owner of the schema. This bot's `scripts/docker-entrypoint.sh` does
+**not** push — it only `exec node dist/index.js` (the push was removed in
+0.3.0 to avoid a race over the same tables). No `src/db/migrations/*.sql`
+files; no journal. The `db:*` scripts in `package.json` are for local/dev use
+only — never run `db:push` against the shared production database.
 
 ---
 
 ## What this bot does
 
-Euphoric Tickets is a single-purpose Discord bot: members open support tickets via a panel button; staff handle them in private channels.
+Euphoric Tickets is a Discord ticket bot: members open support tickets via a
+panel button; staff handle them in private channels; every action mirrors to
+the web in real time over the shared database (Postgres `LISTEN/NOTIFY`
+triggers the web installs — the bot just writes rows).
+
+**Multi-team.** A single Discord server can host more than one team (a
+`businesses` row). Categories, panels and settings resolve per team — by the
+channel, the panel message, or the ticket category — so two teams can share a
+guild without colliding. `/panel post` and `/tickets settings` take an
+optional autocompleted `team:` option.
+
+**TicketTool coexistence.** A team can run in `tickettool` mode, where the bot
+ingests and controls a third-party TicketTool bot's tickets instead of opening
+its own. TicketTool tickets are **never** closed via euphoric's close flow
+(which deletes the channel) — they close via TicketTool (`$closeRequest`);
+`closeTicket` bails with a reason if `externalSource === 'tickettool'`.
 
 ### Ticket lifecycle
 
-1. Sudo runs `/panel post` in a channel. Bot posts a Components V2 panel with one "Open Ticket" button per configured category.
-2. Member clicks a category button → bot creates `ticket-<n>-<username>` channel under the tickets category, denies `@everyone`, grants the opener `ViewChannel`+`SendMessages`, grants each staff role view+manage perms.
-3. Bot posts a welcome card in the new channel with **Claim**, **Close** buttons. Pings configured staff roles once.
-4. Staff clicks **Claim** → ticket marked claimed, claimer name appended to the welcome card.
-5. Anyone with close perms clicks **Close** (or runs `/tickets close`) → bot fetches the full message history, renders an HTML transcript, posts the file to the configured transcript channel, then deletes the ticket channel.
+1. Sudo runs `/panel post` in a channel. Bot posts a Components V2 panel with one "Open Ticket" button per configured category (staff-only categories never get a panel button).
+2. Member clicks a category button → `openTicket()` checks the category's `allow_role_ids`, creates a `ticket-<n>-<username>` channel under the category's Discord parent, denies `@everyone`, grants the opener `ViewChannel`+`SendMessages`, grants each staff role view+manage perms.
+3. Bot posts a welcome card in the new channel with **Claim**, **Close**, **Open in web**, and a **Category** select. If the category defines a `first_message_template` it is rendered instead of the default body (placeholders: `{{user}}`, `{{ticketId}}`, `{{subject}}`, `{{category}}`).
+4. Conversation flows both ways: Discord messages relay into `ticket_messages`; web replies arrive in-channel via a per-user webhook spoof.
+5. Staff claim / unclaim / assign / add / remove / rename / move-category — each posts a small silent `-#` subtext status footer into the channel (`postTicketStatus`) and syncs to the web.
+6. Anyone with close perms clicks **Close** (or runs `/tickets close`) → bot renders an HTML transcript, **DMs it to the opener** (best-effort, with a link to the web ticket), then **deletes the ticket channel**. There is no transcript channel and no log channel — see below.
 
-### Settings
+### Close & transcripts (read this carefully)
 
-`/tickets settings` opens a sudo-only ephemeral panel. Each setting is a row in `ticket_settings` keyed by string. Editable:
+- Close renders the HTML transcript with `renderTranscriptHtml` (from `fetchAllMessages`) and **DMs it to the opener** as an `.html` attachment, plus a `WEB_BASE_URL/b/<slug>/tickets/<id>` link when the guild maps to a business. The DM is best-effort — silently skipped if the opener has DMs closed or has left the guild. Then `channel.delete()` removes the channel.
+- There is **no transcript channel and no log channel.** `getTranscriptChannelId` and `getLogChannelId` in `src/services/settingsService.ts` are **no-ops that return `null`** (the columns don't exist on the web schema). `logTicketEvent` in `src/services/ticketLogger.ts` is likewise a **no-op** that still accepts the event shape so a per-business log channel can be reinstated later in one file without revisiting callsites. Do **not** document or rely on a transcript/log-channel post.
+- A web-side close instead *archives* the channel to the team's closed category (`discord_closed_category_id`) so it can be reopened; the bot-side close deletes.
 
-- `tickets.category_id` — Discord category where ticket channels are created
-- `tickets.transcript_channel_id` — where closed-ticket HTML files land
-- `tickets.log_channel_id` — where lifecycle events (open/claim/close/add/remove/rename) post CV2 cards
-- `tickets.staff_role_ids` — comma-separated; these roles see every ticket and can claim/close
-- `tickets.panel_categories` — JSON array of `{ key, label, emoji, description }` driving the panel buttons
+### Configuration lives in DB rows, not a settings table
 
-**Modal limits.** Discord caps modals at 5 ActionRows × 1 TextInput. We're at 5; any new setting needs a different surface (e.g. a buttons + selects panel) instead of being added to the modal.
+There is **no `ticket_settings` table.** Config is split across two tables:
+
+- **`businesses`** — one row per team. Columns include `admin_role_ids` (CSV; these are the staff/admin roles the bot reads), `discord_fallback_category_id` (where ticket channels are created by default), `discord_closed_category_id`, `delete_closed_after_days`, `terminology`, `kind` (`host`/`client`), `ticket_mode` (`euphoric`/`tickettool`), `ticket_tool_category_ids`, and a free-form `settings` JSONB.
+- **`ticket_categories`** — one row per panel option, scoped to a team by `(business_id, key)`. Columns include `label`, `emoji`, `description`, `sort_order`, `discord_parent_category_id`, `allow_role_ids` (who may open), `staff_role_ids` (who is staff for it), `first_message_template`, `staff_only`, and `kind` (`normal`/`project`).
+
+`/tickets settings` opens a sudo-only ephemeral panel + modal that writes the
+few **business-level columns the bot still owns** (`discord_fallback_category_id`,
+`admin_role_ids`, `ticket_mode`, `ticket_tool_category_ids`) and can replace the
+team's `ticket_categories` rows from a JSON array. Full category management
+(per-category roles, templates, parents) lives in the web UI.
+
+**Modal limits.** Discord caps modals at 5 ActionRows × 1 TextInput. Any new
+setting beyond that needs a different surface (buttons + selects) — or, better,
+the web UI, which owns the richer config.
 
 ---
 
@@ -51,64 +93,100 @@ Euphoric Tickets is a single-purpose Discord bot: members open support tickets v
 
 | Command | Access | Notes |
 |---|---|---|
-| `/panel post` | Sudo | Posts the panel to the current channel; stores message ID in `ticket_panels` |
-| `/panel refresh` | Sudo | Re-renders an existing panel after settings change |
-| `/tickets settings` | Sudo | Edit settings via ephemeral panel (5-field modal: category, transcript, log, staff, panel JSON) |
-| `/tickets claim` | Staff | Claim the current ticket (only in a ticket channel) |
-| `/tickets close` | Staff or opener | Close the current ticket — saves transcript to log/transcript channel AND DMs opener (best-effort), deletes channel |
+| `/panel post [team]` | Sudo | Posts the panel to the current channel; stores message ID in `ticket_panels`. Multi-team servers choose `team:` (autocompleted); one-team servers omit it |
+| `/panel refresh [message_id]` | Sudo | Re-renders an existing panel after settings change (from the panel's own team, falling back to the guild default for older panels) |
+| `/tickets settings [team]` | Sudo | Edit a team's DB-backed config via ephemeral panel + modal. Multi-team servers pick a team with `team:` |
+| `/tickets claim` / `/tickets unclaim` | Staff | Take or release the current ticket |
+| `/tickets assign <user>` | Staff | Assign the current ticket to a staff member |
+| `/tickets close` | Staff or opener | Close the current ticket — DMs the rendered transcript to the opener (best-effort) and **deletes** the channel. No transcript/log channel |
 | `/tickets add <user>` | Staff | Add a member to the current ticket (permission overwrite) |
-| `/tickets remove <user>` | Staff | Remove a member from the current ticket (opener cannot be removed — close instead) |
-| `/tickets rename <name>` | Staff | Rename the current ticket channel; input is slugified, prefixed with `ticket-<id>-` |
-| `/tickets list` | Staff | List every open ticket in the guild (capped at 25 rows, overflow shown) |
+| `/tickets remove <user>` | Staff | Remove a member (the opener cannot be removed — close instead) |
+| `/tickets rename <name>` | Staff | Rename the channel; input is slugified, keeps the `ticket-<id>-` prefix |
+| `/tickets list` | Staff | List open tickets in the guild (capped at 25 rows, overflow count shown) |
+| `/tickets category <key>` | Admin | Move the current ticket to another category |
+| `/tickets convert [category] [subject] [opener]` | Admin | Turn the current channel into a ticket and backfill up to 100 recent messages (with attachments) |
+| `/tickets delete` | Admin | Hard-delete a closed ticket's channel |
+| `/admin sudo grant\|revoke\|list` | Sudo | Manage the sudo flag on user rows from Discord |
+| `/admin business create\|list\|delete` | Sudo | Manage team (business) rows |
+
+Slash commands are registered by `src/bot/registerCommands.ts`. CI deploys them
+with `node dist/bot/registerCommands.js` inside the built image; locally use
+`pnpm commands:deploy`.
+
+### Permission model
+
+`resolveTicketAccess` / `resolveTicketAccessByChannel` in
+`src/services/permissions.ts` is the single source of truth; every command
+gates through it. On a multi-team server the check resolves the ticket's **own**
+team, so staff-role checks and audit attribution use the right team even when it
+isn't the guild default.
+
+| Tier | Who | Can |
+|---|---|---|
+| **admin / sudo** | guild `ADMINISTRATOR`, a role in the team's `admin_role_ids`, or a `SUDO_*` role/user | everything, including `delete`, `category`, `convert`, settings |
+| **staff** | holds a role in the ticket category's `staff_role_ids` | claim / unclaim / assign / close / add / remove / rename |
+| **opener** | opened the ticket | close their own |
 
 ---
 
 ## customId conventions
 
-All ticket interactions are prefixed `tk:`:
+All ticket interactions are prefixed `tk:` and routed in
+`src/bot/events/interactionCreate.ts`:
 
 - `tk:open:{categoryKey}` — panel button
 - `tk:claim:{ticketId}` — claim button in the ticket channel
 - `tk:close:{ticketId}` — close button in the ticket channel
 - `tk:close_confirm:{ticketId}` / `tk:close_cancel:{ticketId}` — close confirmation
+- `tk:changecat:{ticketId}` — Category button on the welcome card → opens the category select
+- `tk:changecat_sel:{ticketId}` — category select menu
 - `tk:settings:{action}` / `tk:settings_modal:{key}` — settings UI
 
-`/tickets add|remove|rename|list` are slash subcommands rather than buttons — they don't have customIds.
+`/tickets add|remove|rename|list|assign|category|convert|delete` and
+`/admin …` are slash subcommands rather than buttons — they don't have customIds.
 
 ---
 
 ## Database tables
 
+Schema is mirrored from the web repo under `src/db/schema/*.ts` and re-exported
+from `src/db/schema/index.ts`. **There is no `ticket_settings` table** — config
+lives in `businesses` columns + `ticket_categories` rows (see above).
+
 | Table | Purpose |
 |---|---|
-| `ticket_settings` | Key/value config edited via `/tickets settings` |
-| `ticket_panels` | One row per panel message (channel ID + message ID) so `/panel refresh` can find it |
-| `tickets` | Active and closed tickets — channel ID, opener ID, category key, claimer ID, status, opened/closed timestamps |
-
----
-
-### Ticket lifecycle (extended)
-
-After v0.2.0, every open / claim / close / add-member / remove-member / rename emits a Components V2 card to `tickets.log_channel_id` if set. Closes also DM the rendered HTML transcript to the opener best-effort (silent on DM-closed / left-guild). The same `renderTranscriptHtml` buffer is used for both the log-channel post and the opener DM — don't re-fetch channel messages twice.
-
-`/tickets add` and `/tickets remove` edit channel permission overwrites directly. The opener's overwrite is set up at ticket creation and cannot be removed via `/tickets remove` (closes the ticket instead via `/tickets close`).
-
-`/tickets rename` slugifies the input (`[a-z0-9-]`) and always preserves `ticket-<id>-` as the prefix so ticket numbers stay searchable.
+| `businesses` | One row per team — admin roles, default/closed categories, ticket mode, terminology, settings JSONB |
+| `business_members` | Team membership / roles on the web side |
+| `ticket_categories` | One row per panel option (per team) — label, emoji, parent category, allow/staff roles, first-message template, staff-only |
+| `tickets` | Active and closed tickets — channel ID, opener/claimer/closer user IDs, category ID, status, opened/closed/last-activity timestamps, external source |
+| `ticket_messages` | Relayed Discord messages + attachments, deduped by `discord_message_id`; internal-thread messages tagged `source='internal'` |
+| `ticket_panels` | One row per panel message (channel ID + message ID + business ID) so `/panel refresh` and panel-open resolution can find it |
+| `ticket_external_members` | Extra members added to a ticket (web-tracked) |
+| `users` | Discord users known to the system (resolved from Discord IDs) |
+| `user_notification_prefs` | Per-user notification preferences (web) |
+| `audit_logs` | Per-ticket lifecycle audit rows (open/claim/close/channel_deleted/…) |
+| `bot_errors` | Persistent error log written by the bot |
 
 ---
 
 ## Bot restart (production)
 
-Watchtower auto-pulls; manual restart:
+Watchtower auto-pulls the GHCR image; the deploy workflow also SSHes in and
+restarts. Manual restart:
 
 ```bash
-docker compose -f /home/botuser/projects/euphoric-tickets/docker-compose.yml restart euphoric-tickets
+docker compose -f /home/botuser/projects/euphoric-tickets/docker-compose.yml up -d euphoric-tickets
 docker compose -f /home/botuser/projects/euphoric-tickets/docker-compose.yml logs -f euphoric-tickets
 ```
 
+Use `up -d` (not `restart`) after editing `.env` — `restart` does not re-read
+the env file. The bot joins the external `efm-public-net` network and talks to
+the web stack's `tickets-db` Postgres.
+
 ## Deploy slash commands
 
-In CI, the deploy workflow runs `node dist/bot/registerCommands.js` inside the built image. Locally:
+In CI, the deploy workflow runs `node dist/bot/registerCommands.js` inside the
+built image. Locally:
 
 ```bash
 pnpm commands:deploy
