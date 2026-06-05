@@ -1,9 +1,15 @@
 # Changelog
 
-## [0.5.36] — 2026-06-05 — Docs: full README rewrite to the shared structure
+## [0.5.37] — 2026-06-05 — Docs: full README rewrite to the shared structure
 
 ### Docs
 - **Rewrote `README.md`** to the shared Overview / Architecture / Stack / Quick start / Configuration / Usage / Deployment / Conventions structure, re-verified against the current code. Corrected several stale claims: the **web app owns the schema and runs `drizzle-kit push`** (the bot's `docker-entrypoint.sh` only connects — it no longer pushes); **close DMs the rendered transcript to the opener and deletes the channel** (there is no transcript/log channel — `getTranscriptChannelId`/`getLogChannelId` are no-ops); configuration lives in **`businesses` + `ticket_categories` rows, not a `ticket_settings` table** (no such table exists); the environment table is now derived from `src/config/env.ts` (plus `LEADER_ELECTION`). Documented the multi-team model, the full command set, and the `tk:*` interaction customIds. No runtime code changed.
+
+## [0.5.36] — 2026-06-05 — Clear deleted channel + emit channel_deleted audit for TicketTool tickets (paired with web 0.6.51)
+
+### Changed
+- **`closeShadowTicket` now clears `discord_channel_id` (and the webhook fields) when a TicketTool channel is deleted**, instead of leaving the stale ID in place. The web uses `discordChannelId IS NULL` as the signal that the channel is gone — without this clear, the web can't distinguish "TicketTool just closed it" from "TicketTool deleted it", and the new reopen-as-native flow (web 0.6.51) can't fire for tickets the bot ingested before. Idempotent: subsequent calls find no row to match because the channelId is null. Also stops being early-bail when the row is already `status='closed'` — a separately-detected channel deletion still needs to clear the channelId.
+- **`closeShadowTicket` now also writes a `channel_deleted` audit row** (in addition to `closed` when the status actually transitions). Surfaces the deletion as a red event in the web ticket timeline and gates the new web Reopen button. `closed` is still skipped when the ticket was already closed, so no duplicate close lines.
 
 ## [0.5.35] — 2026-06-02 — /tickets settings team picker (+ fix multi-team settings clobber)
 

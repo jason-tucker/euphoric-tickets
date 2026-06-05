@@ -347,35 +347,48 @@ export async function reprocessTicketToolEmbeds(
 }
 
 // Mark a TicketTool shadow ticket closed because its channel was deleted
-// (TicketTool closed/deleted it). DB-only — never touches Discord. The webhook
-// died with the channel, so we clear it.
+// (TicketTool closed/deleted it). DB-only — never touches Discord. The channel
+// AND webhook are gone, so we clear both — this lets the web detect "no
+// channel" cleanly and offer the reopen-as-native path (web 0.6.51+).
+// Idempotent: a stale channelId is needed to find the row, and the WHERE
+// clause won't match again once cleared.
 export async function closeShadowTicket(channelId: string): Promise<void> {
   const [row] = await db
     .select({ id: tickets.id, businessId: tickets.businessId, status: tickets.status })
     .from(tickets)
     .where(and(eq(tickets.discordChannelId, channelId), eq(tickets.externalSource, 'tickettool')))
     .limit(1)
-  if (!row || row.status === 'closed') return
+  if (!row) return
 
+  const wasOpen = row.status !== 'closed'
   await db
     .update(tickets)
     .set({
-      status: 'closed',
-      closedAt: new Date(),
+      ...(wasOpen ? { status: 'closed' as const, closedAt: new Date() } : {}),
+      discordChannelId: null,
       discordWebhookId: null,
       discordWebhookUrl: null,
       lastActivityAt: new Date(),
     })
     .where(eq(tickets.id, row.id))
 
+  if (wasOpen) {
+    await writeAudit({
+      businessId: row.businessId,
+      ticketId: row.id,
+      actorUserId: null,
+      action: 'closed',
+      metadata: { via: 'tickettool' },
+    })
+  }
   await writeAudit({
     businessId: row.businessId,
     ticketId: row.id,
     actorUserId: null,
-    action: 'closed',
+    action: 'channel_deleted',
     metadata: { via: 'tickettool' },
   })
-  log.info('tickettool: closed ingested ticket (channel gone)', { ticketId: row.id, channelId })
+  log.info('tickettool: cleared deleted channel from ingested ticket', { ticketId: row.id, channelId })
 }
 
 // TicketTool creates its own private thread for staff notes. Rather than have
