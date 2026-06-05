@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.5.37] — 2026-06-05 — Docs: full README rewrite to the shared structure
+
+### Docs
+- **Rewrote `README.md`** to the shared Overview / Architecture / Stack / Quick start / Configuration / Usage / Deployment / Conventions structure, re-verified against the current code. Corrected several stale claims: the **web app owns the schema and runs `drizzle-kit push`** (the bot's `docker-entrypoint.sh` only connects — it no longer pushes); **close DMs the rendered transcript to the opener and deletes the channel** (there is no transcript/log channel — `getTranscriptChannelId`/`getLogChannelId` are no-ops); configuration lives in **`businesses` + `ticket_categories` rows, not a `ticket_settings` table** (no such table exists); the environment table is now derived from `src/config/env.ts` (plus `LEADER_ELECTION`). Documented the multi-team model, the full command set, and the `tk:*` interaction customIds. No runtime code changed.
+
 ## [0.5.36] — 2026-06-05 — Clear deleted channel + emit channel_deleted audit for TicketTool tickets (paired with web 0.6.51)
 
 ### Changed
@@ -360,4 +365,4 @@ Risks: bot now refuses to operate in any guild without a `businesses` row; trans
 - Docker + GHCR build pipeline (GitHub Actions), watchtower-enabled docker-compose, systemd weekly restart timer.
 - Bot management CLI at `scripts/euphoric-tickets` mirroring the otterbot/squishybot pattern.
 
-`v0.5.22 · a0b2a56`
+`v0.5.36 · a9b673e`
