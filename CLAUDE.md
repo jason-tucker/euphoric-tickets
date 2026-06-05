@@ -43,11 +43,20 @@ panel button; staff handle them in private channels; every action mirrors to
 the web in real time over the shared database (Postgres `LISTEN/NOTIFY`
 triggers the web installs — the bot just writes rows).
 
+**Works on any server (auto-provisioning).** When the bot is added to a guild,
+a `guildCreate` handler auto-creates a `host` team (`businesses` row) for it —
+no manual `/admin business create` needed. On startup it also backfills a row
+for every guild it's already in. Both go through `ensureBusinessForGuild` in
+`src/services/businessProvision.ts`, which is idempotent (a no-op when the guild
+already has at least one team). The server then appears in the unified web
+dashboard right away.
+
 **Multi-team.** A single Discord server can host more than one team (a
 `businesses` row). Categories, panels and settings resolve per team — by the
 channel, the panel message, or the ticket category — so two teams can share a
 guild without colliding. `/panel post` and `/tickets settings` take an
-optional autocompleted `team:` option.
+optional autocompleted `team:` option. (Auto-provisioning only ever creates the
+*first* team for a guild; extra teams are still added by hand / on the web.)
 
 **TicketTool coexistence.** A team can run in `tickettool` mode, where the bot
 ingests and controls a third-party TicketTool bot's tickets instead of opening
@@ -57,7 +66,7 @@ its own. TicketTool tickets are **never** closed via euphoric's close flow
 
 ### Ticket lifecycle
 
-1. Sudo runs `/panel post` in a channel. Bot posts a Components V2 panel with one "Open Ticket" button per configured category (staff-only categories never get a panel button).
+1. A server manager (anyone with **Manage Server**, a Ticket Master role, or sudo) runs `/panel post` in a channel. Bot posts a Components V2 panel with one "Open Ticket" button per configured category (staff-only categories never get a panel button).
 2. Member clicks a category button → `openTicket()` checks the category's `allow_role_ids`, creates a `ticket-<n>-<username>` channel under the category's Discord parent, denies `@everyone`, grants the opener `ViewChannel`+`SendMessages`, grants each staff role view+manage perms.
 3. Bot posts a welcome card in the new channel with **Claim**, **Close**, **Open in web**, and a **Category** select. If the category defines a `first_message_template` it is rendered instead of the default body (placeholders: `{{user}}`, `{{ticketId}}`, `{{subject}}`, `{{category}}`).
 4. Conversation flows both ways: Discord messages relay into `ticket_messages`; web replies arrive in-channel via a per-user webhook spoof.
@@ -77,8 +86,10 @@ There is **no `ticket_settings` table.** Config is split across two tables:
 - **`businesses`** — one row per team. Columns include `admin_role_ids` (CSV; these are the staff/admin roles the bot reads), `discord_fallback_category_id` (where ticket channels are created by default), `discord_closed_category_id`, `delete_closed_after_days`, `terminology`, `kind` (`host`/`client`), `ticket_mode` (`euphoric`/`tickettool`), `ticket_tool_category_ids`, and a free-form `settings` JSONB.
 - **`ticket_categories`** — one row per panel option, scoped to a team by `(business_id, key)`. Columns include `label`, `emoji`, `description`, `sort_order`, `discord_parent_category_id`, `allow_role_ids` (who may open), `staff_role_ids` (who is staff for it), `first_message_template`, `staff_only`, and `kind` (`normal`/`project`).
 
-`/tickets settings` opens a sudo-only ephemeral panel + modal that writes the
-few **business-level columns the bot still owns** (`discord_fallback_category_id`,
+`/tickets settings` opens a **Manage-Server-gated** ephemeral panel + modal
+(anyone with Manage Server / a Ticket Master role / sudo — see the permission
+model below) that writes the few **business-level columns the bot still owns**
+(`discord_fallback_category_id`,
 `admin_role_ids`, `ticket_mode`, `ticket_tool_category_ids`) and can replace the
 team's `ticket_categories` rows from a JSON array. Full category management
 (per-category roles, templates, parents) lives in the web UI.
@@ -93,9 +104,9 @@ the web UI, which owns the richer config.
 
 | Command | Access | Notes |
 |---|---|---|
-| `/panel post [team]` | Sudo | Posts the panel to the current channel; stores message ID in `ticket_panels`. Multi-team servers choose `team:` (autocompleted); one-team servers omit it |
-| `/panel refresh [message_id]` | Sudo | Re-renders an existing panel after settings change (from the panel's own team, falling back to the guild default for older panels) |
-| `/tickets settings [team]` | Sudo | Edit a team's DB-backed config via ephemeral panel + modal. Multi-team servers pick a team with `team:` |
+| `/panel post [team]` | Manage Server | Posts the panel to the current channel; stores message ID in `ticket_panels`. Multi-team servers choose `team:` (autocompleted); one-team servers omit it |
+| `/panel refresh [message_id]` | Manage Server | Re-renders an existing panel after settings change (from the panel's own team, falling back to the guild default for older panels) |
+| `/tickets settings [team]` | Manage Server | Edit a team's DB-backed config via ephemeral panel + modal. Multi-team servers pick a team with `team:` |
 | `/tickets claim` / `/tickets unclaim` | Staff | Take or release the current ticket |
 | `/tickets assign <user>` | Staff | Assign the current ticket to a staff member |
 | `/tickets close` | Staff or opener | Close the current ticket — DMs the rendered transcript to the opener (best-effort) and **deletes** the channel. No transcript/log channel |
@@ -123,9 +134,14 @@ isn't the guild default.
 
 | Tier | Who | Can |
 |---|---|---|
-| **admin / sudo** | guild `ADMINISTRATOR`, a role in the team's `admin_role_ids`, or a `SUDO_*` role/user | everything, including `delete`, `category`, `convert`, settings |
+| **admin / sudo** | Discord **Manage Server** (so Administrator + the guild owner too), a "Ticket Master" role in the team's `admin_role_ids`, or a `SUDO_*` role/user | everything, including `delete`, `category`, `convert`, panels + settings |
 | **staff** | holds a role in the ticket category's `staff_role_ids` | claim / unclaim / assign / close / add / remove / rename |
 | **opener** | opened the ticket | close their own |
+
+`isAdminForBusiness` (Manage Server / Ticket Master / sudo) is the admin gate
+for ticket actions; `canManageGuildSettings(member, teams)` is the same check
+for the panel + settings surfaces (commands, the Edit button, the modal save).
+Both live in `src/services/permissions.ts`.
 
 ---
 

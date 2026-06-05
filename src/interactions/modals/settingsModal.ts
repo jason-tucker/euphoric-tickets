@@ -1,5 +1,5 @@
 import type { ModalSubmitInteraction } from 'discord.js'
-import { isSudoUser } from '../../services/sudoService'
+import { canManageGuildSettings } from '../../services/permissions'
 
 // Read a TextInput that may be absent on a stale modal submit (the TicketTool
 // rows were added after the original 3). getTextInputValue throws when the
@@ -18,15 +18,23 @@ import {
   updateBusinessSettings,
   validatePanelCategoriesJson,
 } from '../../services/settingsService'
-import { getBusinessByGuildId, getBusinessBySlugInGuild } from '../../services/businessResolver'
+import {
+  getBusinessByGuildId,
+  getBusinessBySlugInGuild,
+  getBusinessesByGuildId,
+} from '../../services/businessResolver'
 import { reconcileBusinessTicketTool } from '../../services/ticketToolIngest'
 
 export async function handleSettingsModalSubmit(interaction: ModalSubmitInteraction): Promise<void> {
   if (!interaction.inGuild() || !interaction.guild) return
 
   const member = await interaction.guild.members.fetch(interaction.user.id)
-  if (!isSudoUser(member)) {
-    await interaction.reply({ content: 'Sudo only.', ephemeral: true })
+  const teams = await getBusinessesByGuildId(interaction.guild.id)
+  if (!canManageGuildSettings(member, teams)) {
+    await interaction.reply({
+      content: 'You need **Manage Server** (or a Ticket Master role) to edit settings.',
+      ephemeral: true,
+    })
     return
   }
 

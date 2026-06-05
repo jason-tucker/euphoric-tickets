@@ -5,22 +5,30 @@ import {
   TextInputStyle,
   type ButtonInteraction,
 } from 'discord.js'
-import { isSudoUser } from '../../services/sudoService'
+import { canManageGuildSettings } from '../../services/permissions'
 import {
   getCategoryId,
   getPanelCategories,
   getStaffRoleIds,
   updateBusinessSettings,
 } from '../../services/settingsService'
-import { getBusinessByGuildId, getBusinessBySlugInGuild } from '../../services/businessResolver'
+import {
+  getBusinessByGuildId,
+  getBusinessBySlugInGuild,
+  getBusinessesByGuildId,
+} from '../../services/businessResolver'
 import { reconcileBusinessTicketTool } from '../../services/ticketToolIngest'
 
 export async function handleSettingsButton(interaction: ButtonInteraction): Promise<void> {
   if (!interaction.inGuild() || !interaction.guild) return
 
   const member = await interaction.guild.members.fetch(interaction.user.id)
-  if (!isSudoUser(member)) {
-    await interaction.reply({ content: 'Sudo only.', ephemeral: true })
+  const teams = await getBusinessesByGuildId(interaction.guild.id)
+  if (!canManageGuildSettings(member, teams)) {
+    await interaction.reply({
+      content: 'You need **Manage Server** (or a Ticket Master role) to edit settings.',
+      ephemeral: true,
+    })
     return
   }
 

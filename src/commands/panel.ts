@@ -5,7 +5,7 @@ import {
   SlashCommandBuilder,
   type TextChannel,
 } from 'discord.js'
-import { isSudoUser } from '../services/sudoService'
+import { canManageGuildSettings } from '../services/permissions'
 import { getPanelCategories } from '../services/settingsService'
 import { getBusinessesByGuildId } from '../services/businessResolver'
 import { buildPanelMessage } from '../services/ticketRenderer'
@@ -49,8 +49,12 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
     return
   }
   const member = await interaction.guild.members.fetch(interaction.user.id)
-  if (!isSudoUser(member)) {
-    await interaction.reply({ content: 'You need sudo to manage panels.', ephemeral: true })
+  const teams = await getBusinessesByGuildId(interaction.guildId!)
+  if (!canManageGuildSettings(member, teams)) {
+    await interaction.reply({
+      content: 'You need **Manage Server** (or a Ticket Master role) to manage panels.',
+      ephemeral: true,
+    })
     return
   }
 
