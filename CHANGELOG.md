@@ -1,16 +1,18 @@
 # Changelog
 
-## [0.6.0] — 2026-06-05 — Auto-provision a team for any guild + Manage Server unlocks panels/settings
+## [0.6.0] — 2026-06-05 — Auto-provision a team for any guild, Manage Server unlocks panels/settings, + sudo bot controls
 
 ### Added
 - **The bot now provisions itself on any server.** A new `guildCreate` handler creates a `host` team (`businesses` row) the moment the bot is added to a guild — slug derived from the guild name (uniquified, with a `team-<id>` / `g-<id>` fallback for collisions or all-emoji names), `name` = guild name, `kind = 'host'`. On startup the bot also backfills a row for every guild it's already in (`backfillBusinessesForGuilds`, run from `ready`), so servers added before this release get one too. Idempotent: it never creates a second team for a guild that already has one (multiple teams per guild is still allowed — it just won't auto-create a duplicate). No more manual `/admin business create` to get going; the server shows up in the unified web dashboard immediately.
+- **Two internal HTTP endpoints powering the web's bot-owner ("Sudo") surface.** `POST /api/internal/guild/leave` (`{ guildId }`) makes the bot leave a guild (the team's DB rows are left intact). `POST /api/internal/bot/username` (`{ name }`) sets the bot's global Discord username and relays Discord's response — including the ≈2/hour rate-limit rejection — instead of swallowing it. Both sit behind the existing `INTERNAL_TOKEN`/bot-token auth on `INTERNAL_PORT`; no new config.
+- **`app_settings` schema mirror** (`src/db/schema/appSettings.ts`) — a flat key/value store for bot-owner global settings (e.g. `bot_name`). Mirrored from the web, which owns + pushes the schema; the bot only reads it.
 
 ### Changed
 - **Discord's Manage Server permission now unlocks panels + team settings.** `/panel post`, `/panel refresh`, `/tickets settings` (and the Edit-settings button + modal save) were sudo-only; they now accept anyone with **Manage Server** (which Administrator and the guild owner subsume) or a "Ticket Master" role — any role in the team's `admin_role_ids`. The new `canManageGuildSettings(member, teams)` helper in `permissions.ts` is the single gate behind all four surfaces. `SUDO_*` users still pass exactly as before.
 - **`isAdminForBusiness` now keys off Manage Server instead of Administrator**, so the central ticket-admin checks (`/tickets category`, `convert`, `delete`, the welcome-card controls) line up with the panels/settings gate and with the web's `deriveLevel`. Administrator and the guild owner still pass — `member.permissions.has(ManageGuild)` returns true for both.
 
 ### Paired with
-- **Web 0.6.56** — `deriveLevel`/`resolveBusinessAccess` resolve Manage Server (and the Ticket Master roles) to admin, so the same people get the web's per-guild admin surfaces (settings, queue, reply/claim/close).
+- **Web 0.6.56** — `deriveLevel`/`resolveBusinessAccess` resolve Manage Server (and the Ticket Master roles) to admin, so the same people get the web's per-guild admin surfaces (settings, queue, reply/claim/close); plus the bot-owner **Sudo** dashboard that drives the two new internal endpoints (set bot name, force-leave a server).
 
 ### Docs
 - Updated `CLAUDE.md` — the Commands table and permission-model section now read **Manage Server / Administrator / Ticket Master / sudo** for panels + settings, and note the auto-provisioning on guild join.

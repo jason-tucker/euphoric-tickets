@@ -182,6 +182,7 @@ lives in `businesses` columns + `ticket_categories` rows (see above).
 | `user_notification_prefs` | Per-user notification preferences (web) |
 | `audit_logs` | Per-ticket lifecycle audit rows (open/claim/close/channel_deleted/…) |
 | `bot_errors` | Persistent error log written by the bot |
+| `app_settings` | Bot-owner global key/value settings (e.g. `bot_name`) — written from the web's Sudo dashboard; the bot reads/applies select keys |
 
 ---
 

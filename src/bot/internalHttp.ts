@@ -28,6 +28,8 @@ export function startInternalHttp(client: Client): void {
     '/api/internal/tickettool/command',
     '/api/internal/tickettool/reconcile',
     '/api/internal/tickettool/reprocess-embeds',
+    '/api/internal/guild/leave',
+    '/api/internal/bot/username',
   ])
 
   const server = http.createServer((req, res) => {
@@ -92,6 +94,52 @@ export function startInternalHttp(client: Client): void {
             const { businessId } = JSON.parse(raw || '{}') as { businessId?: string }
             const out = await reprocessTicketToolEmbeds(client, { businessId })
             res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ ok: true, ...out }))
+            return
+          }
+
+          // POST /api/internal/guild/leave — a bot owner (sudo) on the web asks
+          // the bot to leave a guild. Body: { guildId }. The team's DB rows are
+          // left intact; this only severs the bot's Discord membership.
+          if (url === '/api/internal/guild/leave') {
+            const { guildId } = JSON.parse(raw) as { guildId?: string }
+            if (!guildId) {
+              res.writeHead(400, { 'Content-Type': 'application/json' }).end('{"ok":false,"error":"guildId required"}')
+              return
+            }
+            const guild = client.guilds.cache.get(guildId)
+            if (!guild) {
+              res.writeHead(404, { 'Content-Type': 'application/json' }).end('{"ok":false,"error":"bot is not in that guild"}')
+              return
+            }
+            await guild.leave()
+            log.info('left guild on sudo request', { guildId, name: guild.name })
+            res.writeHead(200, { 'Content-Type': 'application/json' }).end('{"ok":true}')
+            return
+          }
+
+          // POST /api/internal/bot/username — a bot owner (sudo) sets the bot's
+          // global Discord username. Body: { name }. Discord rate-limits username
+          // changes hard (≈2/hour); surface its rejection rather than swallowing.
+          if (url === '/api/internal/bot/username') {
+            const { name } = JSON.parse(raw) as { name?: string }
+            const trimmed = (name ?? '').trim()
+            if (trimmed.length < 2 || trimmed.length > 32) {
+              res.writeHead(400, { 'Content-Type': 'application/json' }).end('{"ok":false,"error":"name must be 2-32 characters"}')
+              return
+            }
+            if (!client.user) {
+              res.writeHead(503, { 'Content-Type': 'application/json' }).end('{"ok":false,"error":"bot not ready"}')
+              return
+            }
+            try {
+              await client.user.setUsername(trimmed)
+              log.info('bot username changed on sudo request', { name: trimmed })
+              res.writeHead(200, { 'Content-Type': 'application/json' }).end('{"ok":true}')
+            } catch (err) {
+              res
+                .writeHead(422, { 'Content-Type': 'application/json' })
+                .end(JSON.stringify({ ok: false, error: String(err).slice(0, 300) }))
+            }
             return
           }
 
