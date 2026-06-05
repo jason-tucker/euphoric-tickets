@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.5.38] — 2026-06-05 — Docs: reconcile CLAUDE.md with current code
+
+### Docs
+- **Reconciled `CLAUDE.md` with the current code**, removing the same stale claims `README.md` already shed (no runtime code changed):
+  - Dropped the non-existent **`ticket_settings` table** and the `tickets.*` key/value setting rows — config lives in **`businesses` columns + `ticket_categories` rows**.
+  - Corrected the schema-push ownership: the **web app owns and runs `drizzle-kit push`**; the bot's `scripts/docker-entrypoint.sh` only connects (`exec node dist/index.js`) — it no longer runs `drizzle-kit push --force` (removed in 0.3.0).
+  - Rewrote the close flow: close **DMs the rendered HTML transcript to the opener** (best-effort, with a web link) and **deletes the channel**; there is **no transcript/log channel** (`getTranscriptChannelId`/`getLogChannelId`/`logTicketEvent` are no-ops).
+  - Aligned the DB-tables, settings, lifecycle, commands, customId and permission-model sections with the real `src/` and the rewritten README — multi-team resolution, TicketTool mode, the full command set, and the `tk:changecat`/`tk:changecat_sel` ids.
+
 ## [0.5.37] — 2026-06-05 — Docs: full README rewrite to the shared structure
 
 ### Docs
@@ -365,4 +374,4 @@ Risks: bot now refuses to operate in any guild without a `businesses` row; trans
 - Docker + GHCR build pipeline (GitHub Actions), watchtower-enabled docker-compose, systemd weekly restart timer.
 - Bot management CLI at `scripts/euphoric-tickets` mirroring the otterbot/squishybot pattern.
 
-`v0.5.36 · a9b673e`
+`v0.5.38 · dd1e21e`
