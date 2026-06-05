@@ -45,7 +45,7 @@ Browser  ──▶  euphoric-tickets-web  ────────┘        (we
 
 Configuration lives in database rows, not a settings table:
 
-- **`businesses`** — one row per team. Columns include `admin_role_ids` (CSV), `discord_fallback_category_id`, `discord_closed_category_id`, `delete_closed_after_days`, `terminology`, `kind` (`host`/`client`), `ticket_mode` (`euphoric`/`tickettool`), `ticket_tool_category_ids`, and a free-form `settings` JSONB.
+- **`businesses`** — one row per team. Columns include `admin_role_ids` (CSV), `discord_fallback_category_id`, `discord_closed_category_id`, `delete_closed_after_days`, `ticket_mode` (`euphoric`/`tickettool`), `ticket_tool_category_ids`, and a free-form `settings` JSONB.
 - **`ticket_categories`** — one row per panel option, scoped to a team by `(business_id, key)`. Columns include `label`, `emoji`, `discord_parent_category_id`, `allow_role_ids` (who may open), `staff_role_ids` (who is staff for it), `first_message_template`, `staff_only`, and `kind` (`normal`/`project`).
 
 Full table list: `businesses`, `ticket_categories`, `tickets`, `ticket_messages`, `ticket_panels`, `users`, `business_members`, `audit_logs`, `bot_errors`, `user_notification_prefs`, `ticket_external_members`. (There is **no** `ticket_settings` table.)
@@ -121,7 +121,7 @@ Environment variables, derived from `src/config/env.ts` (plus `LEADER_ELECTION`,
 | `/tickets convert [category] [subject] [opener]` | admin | Turn this channel into a ticket and backfill up to 100 recent messages. |
 | `/tickets delete` | admin | Hard-delete a closed ticket's channel. |
 | `/admin sudo grant\|revoke\|list` | sudo | Manage the sudo flag on user rows from Discord. |
-| `/admin business create\|list\|delete` | sudo | Manage team (business) rows — create a host/client team, list, or delete. |
+| `/admin business create\|list\|delete` | sudo | Manage team (business) rows — create a team, list, or delete. |
 
 The welcome-card buttons mirror the in-channel controls: Claim, Close, Open in web, and a category select.
 

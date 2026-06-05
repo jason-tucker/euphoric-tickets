@@ -44,7 +44,7 @@ the web in real time over the shared database (Postgres `LISTEN/NOTIFY`
 triggers the web installs — the bot just writes rows).
 
 **Works on any server (auto-provisioning).** When the bot is added to a guild,
-a `guildCreate` handler auto-creates a `host` team (`businesses` row) for it —
+a `guildCreate` handler auto-creates a team (`businesses` row) for it —
 no manual `/admin business create` needed. On startup it also backfills a row
 for every guild it's already in. Both go through `ensureBusinessForGuild` in
 `src/services/businessProvision.ts`, which is idempotent (a no-op when the guild
@@ -83,7 +83,7 @@ its own. TicketTool tickets are **never** closed via euphoric's close flow
 
 There is **no `ticket_settings` table.** Config is split across two tables:
 
-- **`businesses`** — one row per team. Columns include `admin_role_ids` (CSV; these are the staff/admin roles the bot reads), `discord_fallback_category_id` (where ticket channels are created by default), `discord_closed_category_id`, `delete_closed_after_days`, `terminology`, `kind` (`host`/`client`), `ticket_mode` (`euphoric`/`tickettool`), `ticket_tool_category_ids`, and a free-form `settings` JSONB.
+- **`businesses`** — one row per team. Columns include `admin_role_ids` (CSV; these are the staff/admin roles the bot reads), `discord_fallback_category_id` (where ticket channels are created by default), `discord_closed_category_id`, `delete_closed_after_days`, `ticket_mode` (`euphoric`/`tickettool`), `ticket_tool_category_ids`, and a free-form `settings` JSONB.
 - **`ticket_categories`** — one row per panel option, scoped to a team by `(business_id, key)`. Columns include `label`, `emoji`, `description`, `sort_order`, `discord_parent_category_id`, `allow_role_ids` (who may open), `staff_role_ids` (who is staff for it), `first_message_template`, `staff_only`, and `kind` (`normal`/`project`).
 
 `/tickets settings` opens a **Manage-Server-gated** ephemeral panel + modal
@@ -171,7 +171,7 @@ lives in `businesses` columns + `ticket_categories` rows (see above).
 
 | Table | Purpose |
 |---|---|
-| `businesses` | One row per team — admin roles, default/closed categories, ticket mode, terminology, settings JSONB |
+| `businesses` | One row per team — admin roles, default/closed categories, ticket mode, settings JSONB |
 | `business_members` | Team membership / roles on the web side |
 | `ticket_categories` | One row per panel option (per team) — label, emoji, parent category, allow/staff roles, first-message template, staff-only |
 | `tickets` | Active and closed tickets — channel ID, opener/claimer/closer user IDs, category ID, status, opened/closed/last-activity timestamps, external source |

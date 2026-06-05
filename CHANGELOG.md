@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.7.0] — 2026-06-05 — Drop the host/client distinction — every tenant is just a Team
+
+### Removed
+- **Schema mirror: the host/client team distinction is gone.** Dropped `businesses.kind` (`host`/`client`), `businesses.parent_business_id`, `businesses.terminology`, and `tickets.client_business_id` from the mirrored schema (`src/db/schema/*.ts`). The web owns the schema and runs `drizzle-kit push --force`, which removes the columns on next deploy; the bot just stops reading/writing them. Every tenant is now simply a **Team**.
+- **`/admin business create` loses its `kind` and `parent_host_slug` options** — it always creates a team. `/admin business list` drops the Hosts/Clients split and lists every team under one heading.
+- **Auto-provisioning (`ensureBusinessForGuild`) no longer sets `kind: 'host'`** on insert — there's only one kind of tenant now.
+
+### Paired with
+- **Web 0.7.0** — owns the schema drop, removes the `/admin` Kind/Parent selectors and the Clients section, drops the ticket-queue Client column + filter and the per-team Terminology toggle, and renames the all-teams rollup route `/clients` → `/teams`.
+
 ## [0.6.0] — 2026-06-05 — Auto-provision a team for any guild, Manage Server unlocks panels/settings, + sudo bot controls
 
 ### Added
@@ -391,4 +401,4 @@ Risks: bot now refuses to operate in any guild without a `businesses` row; trans
 - Docker + GHCR build pipeline (GitHub Actions), watchtower-enabled docker-compose, systemd weekly restart timer.
 - Bot management CLI at `scripts/euphoric-tickets` mirroring the otterbot/squishybot pattern.
 
-`v0.6.0 · e4e605b`
+`v0.7.0 · 9bb1d48`
