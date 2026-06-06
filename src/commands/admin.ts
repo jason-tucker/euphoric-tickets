@@ -2,12 +2,10 @@ import {
   ChatInputCommandInteraction,
   ContainerBuilder,
   MessageFlags,
-  SeparatorBuilder,
-  SeparatorSpacingSize,
   SlashCommandBuilder,
   TextDisplayBuilder,
 } from 'discord.js'
-import { and, desc, eq } from 'drizzle-orm'
+import { desc, eq } from 'drizzle-orm'
 import { db } from '../db/client'
 import { businesses, users } from '../db/schema'
 import { isSudoUser } from '../services/sudoService'
@@ -44,7 +42,7 @@ export const data = new SlashCommandBuilder()
       .addSubcommand((sc) =>
         sc
           .setName('create')
-          .setDescription('Create a host or client business')
+          .setDescription('Create a team')
           .addStringOption((opt) =>
             opt.setName('slug').setDescription('URL slug (lowercase, hyphens)').setRequired(true).setMaxLength(40),
           )
@@ -53,19 +51,9 @@ export const data = new SlashCommandBuilder()
           )
           .addStringOption((opt) =>
             opt.setName('guild_id').setDescription('Discord guild snowflake').setRequired(true),
-          )
-          .addStringOption((opt) =>
-            opt
-              .setName('kind')
-              .setDescription('host (operator) or client (visitor org)')
-              .setRequired(false)
-              .addChoices({ name: 'host', value: 'host' }, { name: 'client', value: 'client' }),
-          )
-          .addStringOption((opt) =>
-            opt.setName('parent_host_slug').setDescription('Required when kind=client').setRequired(false),
           ),
       )
-      .addSubcommand((sc) => sc.setName('list').setDescription('List every business (hosts and clients)'))
+      .addSubcommand((sc) => sc.setName('list').setDescription('List every team'))
       .addSubcommand((sc) =>
         sc
           .setName('delete')
@@ -167,8 +155,6 @@ async function businessCreate(interaction: ChatInputCommandInteraction): Promise
   const slug = interaction.options.getString('slug', true).trim().toLowerCase()
   const name = interaction.options.getString('name', true).trim()
   const guildId = interaction.options.getString('guild_id', true).trim()
-  const kind = (interaction.options.getString('kind') ?? 'host') as 'host' | 'client'
-  const parentHostSlug = interaction.options.getString('parent_host_slug')?.trim()
 
   if (!SLUG_RE.test(slug)) {
     await interaction.reply({
@@ -182,34 +168,11 @@ async function businessCreate(interaction: ChatInputCommandInteraction): Promise
     return
   }
 
-  let parentBusinessId: string | null = null
-  if (kind === 'client') {
-    if (!parentHostSlug) {
-      await interaction.reply({
-        content: 'Client kind requires a parent_host_slug.',
-        ephemeral: true,
-      })
-      return
-    }
-    const [parent] = await db
-      .select({ id: businesses.id })
-      .from(businesses)
-      .where(and(eq(businesses.slug, parentHostSlug), eq(businesses.kind, 'host')))
-      .limit(1)
-    if (!parent) {
-      await interaction.reply({ content: `No host found with slug \`${parentHostSlug}\`.`, ephemeral: true })
-      return
-    }
-    parentBusinessId = parent.id
-  }
-
   try {
     await db.insert(businesses).values({
       slug,
       name,
       discordGuildId: guildId,
-      kind,
-      parentBusinessId,
     })
   } catch (err) {
     await interaction.reply({ content: `DB insert failed: ${String(err).slice(0, 200)}`, ephemeral: true })
@@ -217,7 +180,7 @@ async function businessCreate(interaction: ChatInputCommandInteraction): Promise
   }
   invalidateBusinessCache(guildId)
   await interaction.reply({
-    content: `✓ Created **${kind}** business \`${slug}\` (${name}) tied to guild \`${guildId}\`.`,
+    content: `✓ Created team \`${slug}\` (${name}) tied to guild \`${guildId}\`.`,
     ephemeral: true,
   })
 }
@@ -225,35 +188,22 @@ async function businessCreate(interaction: ChatInputCommandInteraction): Promise
 async function businessList(interaction: ChatInputCommandInteraction): Promise<void> {
   const rows = await db
     .select({
-      id: businesses.id,
       slug: businesses.slug,
       name: businesses.name,
-      kind: businesses.kind,
       guildId: businesses.discordGuildId,
     })
     .from(businesses)
     .orderBy(desc(businesses.createdAt))
     .limit(50)
 
-  const hosts = rows.filter((r) => r.kind === 'host')
-  const clients = rows.filter((r) => r.kind === 'client')
-
   const container = new ContainerBuilder().addTextDisplayComponents(
-    new TextDisplayBuilder().setContent('## Businesses'),
+    new TextDisplayBuilder().setContent(`## Teams (${rows.length})`),
     new TextDisplayBuilder().setContent(
-      `### Hosts (${hosts.length})\n` +
-        (hosts.length
-          ? hosts.map((h) => `· \`${h.slug}\` — ${h.name} · guild \`${h.guildId}\``).join('\n')
-          : '_none_'),
-    ),
-    new TextDisplayBuilder().setContent(
-      `### Clients (${clients.length})\n` +
-        (clients.length
-          ? clients.map((c) => `· \`${c.slug}\` — ${c.name} · guild \`${c.guildId}\``).join('\n')
-          : '_none_'),
+      rows.length
+        ? rows.map((r) => `· \`${r.slug}\` — ${r.name} · guild \`${r.guildId}\``).join('\n')
+        : '_none_',
     ),
   )
-  container.addSeparatorComponents(new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(false))
   await interaction.reply({
     flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral,
     components: [container],

@@ -35,16 +35,6 @@ export const businesses = pgTable('businesses', {
   // Auto-delete closed tickets older than this many days. Null = keep forever.
   deleteClosedAfterDays: integer('delete_closed_after_days'),
 
-  // 'business' or 'client' — affects UI nouns.
-  terminology: text('terminology', { enum: ['business', 'client'] }).notNull().default('business'),
-
-  // Structural distinction (web#12).
-  //   host   = vendor that operates the ticket system (e.g. EuphoricFM).
-  //   client = visitor org whose members come in and open tickets at a host.
-  // Client businesses must have parent_business_id pointing at a host.
-  kind: text('kind', { enum: ['host', 'client'] }).notNull().default('host'),
-  parentBusinessId: uuid('parent_business_id'),
-
   // Which ticket system this team runs. 'euphoric' (default) = native tickets
   // via panels + web. 'tickettool' = run by the third-party TicketTool bot;
   // euphoric disables its own ticket-opening and ingests + controls

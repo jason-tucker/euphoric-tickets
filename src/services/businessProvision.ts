@@ -69,7 +69,6 @@ export async function ensureBusinessForGuild(guild: { id: string; name: string }
       slug,
       name,
       discordGuildId: guild.id,
-      kind: 'host',
     })
     invalidateBusinessCache(guild.id)
     log.info('auto-provisioned team for guild', { guildId: guild.id, slug })

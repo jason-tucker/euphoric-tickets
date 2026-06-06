@@ -24,15 +24,10 @@ export const tickets = pgTable(
   'tickets',
   {
     id: serial('id').primaryKey(),
-    // The HOST business operating this ticket. Always set.
+    // The team operating this ticket. Always set.
     businessId: uuid('business_id')
       .notNull()
       .references(() => businesses.id, { onDelete: 'cascade' }),
-    // The CLIENT business this ticket is for, when opened on behalf of one.
-    // Null for tickets opened directly by host-side users.
-    clientBusinessId: uuid('client_business_id').references(() => businesses.id, {
-      onDelete: 'set null',
-    }),
     openerUserId: uuid('opener_user_id')
       .notNull()
       .references(() => users.id),
