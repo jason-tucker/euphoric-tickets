@@ -1,0 +1,26 @@
+# Keep the Docker build context lean and free of secrets / local state.
+# The builder stage runs `COPY . .` then `tsc`; it needs src + tsconfig +
+# package manifests + drizzle.docker.config.cjs + scripts/, nothing else.
+# Everything listed here is rebuilt in-image or must never enter a layer.
+
+.git
+.github
+node_modules
+dist
+*.tsbuildinfo
+
+# Secrets & local env — must never land in a build layer or the build cache.
+.env
+.env.*
+!.env.example
+
+# Local agent / editor / OS cruft
+.claude/
+.DS_Store
+
+# Logs
+logs/
+*.log
+
+# Review artifacts (not needed in the runtime image)
+security-review/

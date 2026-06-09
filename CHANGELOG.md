@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.7.1] — 2026-06-09 — Security hardening: close-confirm authz, constant-time internal token, .dockerignore
+
+### Fixed
+- **Close-confirm now re-checks permission.** `executeCloseConfirm` (the "Close & delete" confirm button handler) performed no authorization check, and `/tickets close` posted its confirm **publicly** — so a member added to a ticket via `/tickets add` (neither staff nor opener) could click it and delete the channel. It now resolves access **by channel** (`resolveTicketAccessByChannel`) and refuses unless `canClose`, and the `/tickets close` confirm is **ephemeral**, matching the welcome-card path. (`src/commands/tickets.ts`)
+- **Constant-time internal-token check.** The `x-internal-token` comparison on the internal HTTP server used a plain `!==`, a timing oracle on a secret that may be the Discord bot token. Now uses `crypto.timingSafeEqual` with a length/type guard. (`src/bot/internalHttp.ts`)
+- **Added `.dockerignore`.** The build had none, so the builder's `COPY . .` could pull `.git`, a local `.env`, or `.claude/` into an image layer / build cache. Excludes those (keeps everything the build needs).
+
+### Changed
+- **Warn when `INTERNAL_TOKEN` is unset.** The internal web↔bot auth falls back to `DISCORD_BOT_TOKEN`, reusing the most sensitive credential as an HTTP secret. The bot now logs a loud startup warning in that case, and `.env.example` documents `INTERNAL_TOKEN` / `WEB_BASE_URL` / `INTERNAL_PORT`. On-wire behavior is unchanged (non-breaking); set a dedicated `INTERNAL_TOKEN` on both apps to retire the fallback.
+
+### Security
+- Full review under `security-review/` (report, threat model, remediation plan, dependency/SBOM notes, deployment/rollback). No exposed secrets found in code or git history; no SQL-injection surface (parameterized Drizzle throughout). Deferred items tracked: F3 multi-team authz drift, F6 non-root container, F7 CI action pinning, F8 reliability timeouts, F9 test suite.
+
 ## [0.7.0] — 2026-06-05 — Drop the host/client distinction — every tenant is just a Team
 
 ### Removed
@@ -401,4 +414,4 @@ Risks: bot now refuses to operate in any guild without a `businesses` row; trans
 - Docker + GHCR build pipeline (GitHub Actions), watchtower-enabled docker-compose, systemd weekly restart timer.
 - Bot management CLI at `scripts/euphoric-tickets` mirroring the otterbot/squishybot pattern.
 
-`v0.7.0 · 9bb1d48`
+`v0.7.1 · d7c4c51`

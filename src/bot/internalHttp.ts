@@ -1,4 +1,5 @@
 import http from 'node:http'
+import { timingSafeEqual } from 'node:crypto'
 import type { Client } from 'discord.js'
 import { eq } from 'drizzle-orm'
 import { db } from '../db/client'
@@ -20,8 +21,34 @@ function internalSecret(): string {
   return env.INTERNAL_TOKEN ?? env.DISCORD_BOT_TOKEN
 }
 
+// Constant-time comparison of the presented token against the shared secret.
+// A plain `!==` leaks how many leading bytes matched via response timing — a
+// timing oracle on a secret that may be the Discord bot token (see the
+// INTERNAL_TOKEN fallback above). Reject non-string / length-mismatched
+// headers before the compare so timingSafeEqual never throws.
+function tokenMatches(presented: string | string[] | undefined, secret: string): boolean {
+  if (typeof presented !== 'string') return false
+  const a = Buffer.from(presented)
+  const b = Buffer.from(secret)
+  if (a.length !== b.length) return false
+  return timingSafeEqual(a, b)
+}
+
 export function startInternalHttp(client: Client): void {
   const secret = internalSecret()
+
+  // F1 (security review): when INTERNAL_TOKEN is unset the Discord bot token —
+  // the single most sensitive credential — doubles as the internal HTTP shared
+  // secret and is sent on the wire to WEB_BASE_URL by notifyBridge. That works
+  // out of the box but reuses the bot token as an auth secret. Warn loudly so
+  // operators set a dedicated INTERNAL_TOKEN (the same value on the web side).
+  if (!env.INTERNAL_TOKEN) {
+    log.warn(
+      'INTERNAL_TOKEN is not set — internal endpoints and the notify bridge are ' +
+        'authenticating with the Discord bot token as a fallback. Set a dedicated ' +
+        'INTERNAL_TOKEN (matching the web app) to avoid reusing the bot token as an HTTP secret.',
+    )
+  }
 
   const ROUTES = new Set([
     '/api/internal/dm',
@@ -37,7 +64,7 @@ export function startInternalHttp(client: Client): void {
       res.writeHead(404).end()
       return
     }
-    if (req.headers['x-internal-token'] !== secret) {
+    if (!tokenMatches(req.headers['x-internal-token'], secret)) {
       res.writeHead(401).end()
       return
     }
