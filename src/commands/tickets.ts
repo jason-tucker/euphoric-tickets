@@ -563,8 +563,12 @@ async function closeHere(interaction: ChatInputCommandInteraction): Promise<void
   // own close flow (which would delete the channel).
   if (await routeExternalTicket(interaction, ctx, 'closeRequest')) return
 
+  // Ephemeral so the destructive "Close & delete" button is only actionable by
+  // the (already authorized) caller — matches the welcome-card close path and
+  // doesn't leave a public delete button sitting in the channel.
   await interaction.reply({
     ...(buildCloseConfirm(ctx.ticket.id) as any),
+    flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral,
   })
 }
 
@@ -832,27 +836,42 @@ export async function executeCloseConfirm(opts: {
   interaction: import('discord.js').ButtonInteraction
   ticketId: number
 }): Promise<void> {
-  const { interaction, ticketId } = opts
+  const { interaction } = opts
   if (!interaction.inGuild() || !interaction.guild) return
   await interaction.deferUpdate()
 
-  const rows = await db.select().from(tickets).where(eq(tickets.id, ticketId)).limit(1)
-  const ticket = rows[0]
-  if (!ticket) {
-    await interaction.editReply({ content: 'Ticket not found.', components: [] })
+  const closer = await interaction.guild.members.fetch(interaction.user.id)
+  const business = await getBusinessByGuildId(interaction.guild.id)
+  if (!business) {
+    await interaction.editReply({ content: 'This server is not configured as a team.', components: [] })
     return
   }
+
+  // F2 (security review): re-verify close permission at the confirm step. The
+  // confirm button can be reached without re-running the initial close check
+  // (older builds posted it publicly), so an added-but-non-staff member must
+  // not be able to delete the channel. Resolve by CHANNEL so the ticket and its
+  // owning team come from context, not the client-supplied id in the customId.
+  const res = await resolveTicketAccessByChannel(closer, business, interaction.channelId)
+  if (!res) {
+    await interaction.editReply({ content: 'This channel is not a ticket.', components: [] })
+    return
+  }
+  if (!res.access.canClose) {
+    await interaction.editReply({ content: 'Only the opener or staff can close this ticket.', components: [] })
+    return
+  }
+
   const channel = interaction.channel as TextChannel | null
   if (!channel) {
     await interaction.editReply({ content: 'Channel context missing.', components: [] })
     return
   }
-  const closer = await interaction.guild.members.fetch(interaction.user.id)
 
   const result = await closeTicket({
     guild: interaction.guild,
     channel,
-    ticket,
+    ticket: res.ticket,
     closer,
   })
   if (!result.ok) {
