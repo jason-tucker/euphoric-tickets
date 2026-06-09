@@ -1,6 +1,6 @@
 {
   "name": "euphoric-tickets",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "description": "Euphoric Tickets — Discord ticket bot",
   "main": "dist/index.js",
   "scripts": {
