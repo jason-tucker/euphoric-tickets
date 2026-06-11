@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.7.2] — 2026-06-11 — Performance: defer slow buttons, parallel close flow, batched startup backfill
+
+### Fixed
+- **Three button handlers no longer race Discord's 3-second interaction window.** The welcome-card **Close** button (`handleTicketClose`) and **Category** button (`handleChangeCategoryButton`) did their DB/REST lookups *before* the first response and could die with "interaction failed" under load — both now `deferReply` first and edit in the result. The settings **TicketTool mode toggle** was worse: switching the mode on reconciles every watched channel (REST + DB per channel) before replying, which is guaranteed to blow the window on servers with many open TicketTool tickets — its branch now defers first (the Edit-settings path is untouched: `showModal` must stay the first response).
+
+### Changed
+- **Ticket close is faster.** The transcript fetch, opener-ID lookup, category-label lookup, and business lookup in `closeTicket` ran serially; the three cheap lookups now run alongside the (dominant) paginated transcript fetch via `Promise.all`, and the duplicate in-flow business re-fetch is gone. `fetchAllMessages` also stops re-sorting + prepending per 100-message batch (O(n²) on long tickets) in favor of one final chronological sort.
+- **Startup backfill issues one query instead of one per guild.** `backfillBusinessesForGuilds` now checks which guilds already have a team row with a single `inArray` query and only walks `ensureBusinessForGuild` for the missing ones (falling back to the old per-guild loop if that query fails). With N already-provisioned guilds that's 1 round-trip instead of N.
+- **DB pool sized for gateway concurrency** — `max` raised 10 → 20 (`src/db/client.ts`). Message relay + interactions + startup resync fan out concurrently and could starve a 10-connection pool; 20 stays well inside Postgres' default `max_connections=100` next to the web's pool of 10.
+- **Schema mirror gains the web's new hot-path indexes** (`businesses.discord_guild_id`; `tickets.discord_channel_id` / `discord_internal_thread_id` / `parent_ticket_id`; `ticket_messages.discord_message_id`). The web still owns + pushes the schema — the channel→ticket lookup this bot runs on **every guild message** stops being a sequential scan once web 0.10.1 deploys.
+
+### Removed
+- **Dead `handleTicketCloseConfirm`** in `src/interactions/buttons/ticketClose.ts` — the router has sent `tk:close_confirm:` to `executeCloseConfirm` (which re-checks authz, per 0.7.1) since that fix; the old unrouted handler performed **no permission check** and is deleted outright.
+
+### Paired with
+- **Web 0.10.1** — owns + pushes the new indexes and collapses its overview-stat queries.
+
 ## [0.7.1] — 2026-06-09 — Security hardening: close-confirm authz, constant-time internal token, .dockerignore
 
 ### Fixed
@@ -414,4 +431,4 @@ Risks: bot now refuses to operate in any guild without a `businesses` row; trans
 - Docker + GHCR build pipeline (GitHub Actions), watchtower-enabled docker-compose, systemd weekly restart timer.
 - Bot management CLI at `scripts/euphoric-tickets` mirroring the otterbot/squishybot pattern.
 
-`v0.7.1 · d7c4c51`
+`v0.7.2 · d9c2caa`

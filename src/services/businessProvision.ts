@@ -1,4 +1,4 @@
-import { eq } from 'drizzle-orm'
+import { eq, inArray } from 'drizzle-orm'
 import { db } from '../db/client'
 import { businesses } from '../db/schema/businesses'
 import { invalidateBusinessCache } from './businessResolver'
@@ -78,9 +78,30 @@ export async function ensureBusinessForGuild(guild: { id: string; name: string }
 }
 
 // Backfill — make sure every guild the bot is currently in has a team row.
-// Runs once on startup; ensureBusinessForGuild guards against double-creating.
+// Runs once on startup. One batched existence query replaces a round-trip per
+// guild (the common case is "everything already provisioned"); only the
+// missing guilds go through ensureBusinessForGuild, which stays idempotent.
 export async function backfillBusinessesForGuilds(
   guilds: Iterable<{ id: string; name: string }>,
 ): Promise<void> {
-  for (const g of guilds) await ensureBusinessForGuild(g)
+  const list = [...guilds]
+  if (list.length === 0) return
+
+  let provisioned: Set<string> | null = null
+  try {
+    const rows = await db
+      .selectDistinct({ guildId: businesses.discordGuildId })
+      .from(businesses)
+      .where(inArray(businesses.discordGuildId, list.map((g) => g.id)))
+    provisioned = new Set(rows.map((r) => r.guildId))
+  } catch (err) {
+    log.error('backfill existence query failed; falling back to per-guild checks', {
+      err: String(err),
+    })
+  }
+
+  for (const g of list) {
+    if (provisioned?.has(g.id)) continue
+    await ensureBusinessForGuild(g)
+  }
 }

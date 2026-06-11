@@ -68,6 +68,11 @@ export const tickets = pgTable(
     byOpener: index('tickets_opener_idx').on(t.openerUserId),
     byAssignee: index('tickets_assignee_idx').on(t.assigneeUserId),
     byExternalSource: index('tickets_external_source_idx').on(t.externalSource),
+    // Channel → ticket is this bot's hottest lookup (messageCreate relay runs
+    // it on every guild message; the internal-thread id is OR'd in).
+    byDiscordChannel: index('tickets_discord_channel_idx').on(t.discordChannelId),
+    byInternalThread: index('tickets_internal_thread_idx').on(t.discordInternalThreadId),
+    byParent: index('tickets_parent_idx').on(t.parentTicketId),
   }),
 )
 

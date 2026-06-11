@@ -16,12 +16,13 @@ export async function fetchAllMessages(channel: TextChannel, hardCap = 2000): Pr
   while (all.length < hardCap) {
     const batch: Collection<string, Message> = await channel.messages.fetch({ limit: 100, before })
     if (batch.size === 0) break
-    const sorted = [...batch.values()].sort((a, b) => Number(a.createdTimestamp) - Number(b.createdTimestamp))
-    all.unshift(...sorted)
+    all.push(...batch.values())
     before = batch.last()?.id
     if (batch.size < 100) break
   }
-  return all
+  // Batches arrive newest-first; one global sort puts the transcript in
+  // chronological order (cheaper than re-sorting + prepending per batch).
+  return all.sort((a, b) => Number(a.createdTimestamp) - Number(b.createdTimestamp))
 }
 
 export function renderTranscriptHtml(opts: {

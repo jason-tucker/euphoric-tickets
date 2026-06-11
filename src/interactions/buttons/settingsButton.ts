@@ -48,6 +48,12 @@ export async function handleSettingsButton(interaction: ButtonInteraction): Prom
 
   // Flip the ticket system for this team between euphoric-native and TicketTool.
   if (action === 'togglemode') {
+    // Defer first — switching tickettool on reconciles every watched channel
+    // (REST + DB per channel), which blows well past the 3s interaction window
+    // on servers with many open TicketTool tickets. The modal path below must
+    // NOT defer (showModal has to be the first response), so this lives here.
+    await interaction.deferReply({ ephemeral: true })
+
     const next = business.ticketMode === 'tickettool' ? 'euphoric' : 'tickettool'
     await updateBusinessSettings(interaction.guild.id, { ticketMode: next }, business)
 
@@ -58,14 +64,13 @@ export async function handleSettingsButton(interaction: ButtonInteraction): Prom
       if (fresh) grabbed = await reconcileBusinessTicketTool(interaction.client, fresh).catch(() => 0)
     }
 
-    await interaction.reply({
+    await interaction.editReply({
       content:
         next === 'tickettool'
           ? '🔁 This team now runs on **TicketTool**. euphoric won’t open its own tickets here — it ingests + controls TicketTool’s.' +
             (grabbed > 0 ? ` Back-grabbed **${grabbed}** open ticket${grabbed === 1 ? '' : 's'}.` : '') +
             ' Make sure watched categories + prefix are set, and that this bot is whitelisted in TicketTool → Server Configs → Bot.'
           : '🔁 This team now runs on **Euphoric Tickets** (native panels + web). TicketTool ingestion is paused.',
-      ephemeral: true,
     })
     return
   }

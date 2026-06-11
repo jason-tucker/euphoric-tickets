@@ -36,6 +36,9 @@ export const ticketMessages = pgTable(
   },
   (t) => ({
     byTicket: index('ticket_messages_ticket_idx').on(t.ticketId, t.createdAt),
+    // Relay/backfill dedupe by discord_message_id. Plain index, NOT unique —
+    // uniqueness would make the web's drizzle-kit push fail on duplicate rows.
+    byDiscordMessage: index('ticket_messages_discord_message_idx').on(t.discordMessageId),
   }),
 )
 
