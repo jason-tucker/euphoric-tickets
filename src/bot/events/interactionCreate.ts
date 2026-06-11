@@ -5,11 +5,7 @@ import { execute as executeAdmin, data as adminData } from '../../commands/admin
 import { execute as executeHelp, data as helpData } from '../../commands/help'
 import { handleTicketOpen } from '../../interactions/buttons/ticketOpen'
 import { handleTicketClaim } from '../../interactions/buttons/ticketClaim'
-import {
-  handleTicketClose,
-  handleTicketCloseCancel,
-  handleTicketCloseConfirm,
-} from '../../interactions/buttons/ticketClose'
+import { handleTicketClose, handleTicketCloseCancel } from '../../interactions/buttons/ticketClose'
 import { handleSettingsButton } from '../../interactions/buttons/settingsButton'
 import {
   handleChangeCategoryButton,

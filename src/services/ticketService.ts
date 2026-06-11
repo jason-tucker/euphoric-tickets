@@ -407,13 +407,17 @@ export async function closeTicket(opts: {
   // setting no longer exists on the web schema; we drop posting to a
   // dedicated channel for now. The DM-to-opener path is preserved.)
   try {
-    const messages = await fetchAllMessages(channel)
-    const openerDiscordId = await getDiscordIdForUserId(ticket.openerUserId)
+    // The transcript fetch (paginated REST) dominates close latency — run the
+    // independent lookups alongside it instead of serially after it.
+    const [messages, openerDiscordId, categoryLabel, business] = await Promise.all([
+      fetchAllMessages(channel),
+      getDiscordIdForUserId(ticket.openerUserId),
+      loadCategoryLabel(ticket.categoryId),
+      getBusinessByGuildId(guild.id),
+    ])
     const opener = openerDiscordId
       ? await guild.members.fetch(openerDiscordId).catch(() => null)
       : null
-
-    const categoryLabel = await loadCategoryLabel(ticket.categoryId)
     const html = renderTranscriptHtml({
       guildName: guild.name,
       channelName: channel.name,
@@ -428,9 +432,7 @@ export async function closeTicket(opts: {
       const dmFile = new AttachmentBuilder(buf, {
         name: `ticket-${ticket.id}-${channel.name}.html`,
       })
-      // Resolve the host business slug for the web link. Best-effort: if
-      // the guild isn't tied to a business row, omit the link.
-      const business = await getBusinessByGuildId(guild.id)
+      // Best-effort web link: if the guild isn't tied to a business row, omit it.
       const webLink = business
         ? `${env.WEB_BASE_URL}/b/${business.slug}/tickets/${ticket.id}`
         : null

@@ -20,14 +20,18 @@ export async function handleChangeCategoryButton(interaction: ButtonInteraction)
   const ticketId = Number(interaction.customId.slice('tk:changecat:'.length))
   if (!Number.isInteger(ticketId)) return
 
+  // Defer before the member fetch + business/category lookups — they can
+  // outlast Discord's 3s interaction window under load.
+  await interaction.deferReply({ ephemeral: true })
+
   const member = await interaction.guild.members.fetch(interaction.user.id)
   const business = await getBusinessByGuildId(interaction.guild.id)
   if (!business) {
-    await interaction.reply({ content: 'This server is not configured as a team.', ephemeral: true })
+    await interaction.editReply({ content: 'This server is not configured as a team.' })
     return
   }
   if (!isAdminForBusiness(member, business)) {
-    await interaction.reply({ content: "Only admins can change a ticket's category.", ephemeral: true })
+    await interaction.editReply({ content: "Only admins can change a ticket's category." })
     return
   }
 
@@ -37,7 +41,7 @@ export async function handleChangeCategoryButton(interaction: ButtonInteraction)
     .where(eq(ticketCategories.businessId, business.id))
     .orderBy(asc(ticketCategories.sortOrder), asc(ticketCategories.label))
   if (cats.length === 0) {
-    await interaction.reply({ content: 'No categories configured for this team yet.', ephemeral: true })
+    await interaction.editReply({ content: 'No categories configured for this team yet.' })
     return
   }
 
@@ -54,7 +58,7 @@ export async function handleChangeCategoryButton(interaction: ButtonInteraction)
     )
 
   const row = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select)
-  await interaction.reply({ content: 'Move this ticket to…', components: [row], ephemeral: true })
+  await interaction.editReply({ content: 'Move this ticket to…', components: [row] })
 }
 
 // P5: the category select. Performs the move via the shared service.
