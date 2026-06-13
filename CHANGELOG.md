@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.8.0] — 2026-06-13 — First test suite, CI PR gate, cloud-session readiness
+
+### Added
+- **First automated test suite in the repo** — vitest, 58 tests across 5 files, run with `pnpm test`. Coverage targets the permission and lifecycle core: `permissions.test.ts` (every tier gate — Manage Server / Administrator subsumption, Ticket Master roles, sudo, per-category staff fallback, panel-open allow lists — plus the full `resolveTicketAccess` flag matrix and the multi-team `resolveTicketAccessByChannel` attribution), `businessProvision.test.ts` (slug derivation incl. collision + emoji-name fallbacks, idempotency, never-throws guarantee, batched startup backfill + its per-guild fallback), `settingsService.test.ts` (snowflake CSV partitioning, panel-categories JSON validation incl. the 5-button cap), `ticketRenderer.test.ts` (the `tk:` customId contracts, Discord's 5-buttons/80-chars limits, claimed-state welcome card, `{{placeholder}}` substitution), `transcriptService.test.ts` (HTML escaping of message content/author tags/attachment names — the XSS surface of DM'd transcripts — plus pagination and chronological ordering). Tests never touch Postgres or Discord: shared helpers in `src/test/` stub the env and fake the drizzle query builder (queue-based `FakeDb`).
+- **CI pull-request gate** (`.github/workflows/ci.yml`) — typecheck + test + build on every PR, mirroring the web repo's gate: actions pinned to commit SHAs, least-privilege `contents: read`, concurrency cancellation. A type error now fails the PR instead of surfacing post-merge in the deploy build, where it silently blocks every deploy.
+- **`tsconfig.build.json`** — the production build (`pnpm build` and the Dockerfile's tsc stage) now excludes `src/**/*.test.ts` and `src/test/` so test code never lands in `dist`; `pnpm typecheck` still covers the full tree, tests included.
+
+### Changed
+- **CLAUDE.md** — the `/home/botuser/projects/claude-all.md` pointer is now explicitly flagged as VPS-only (the file doesn't exist in cloud checkouts) with its essentials inlined; rule 1 documents the new CI gate and that `pnpm typecheck`/`pnpm test` are safe in cloud sessions; new rule 1b ("Run the tests") sets the expectation that changed services update their `.test.ts` neighbours in the same commit.
+
 ## [0.7.2] — 2026-06-11 — Performance: defer slow buttons, parallel close flow, batched startup backfill
 
 ### Fixed
@@ -431,4 +441,4 @@ Risks: bot now refuses to operate in any guild without a `businesses` row; trans
 - Docker + GHCR build pipeline (GitHub Actions), watchtower-enabled docker-compose, systemd weekly restart timer.
 - Bot management CLI at `scripts/euphoric-tickets` mirroring the otterbot/squishybot pattern.
 
-`v0.7.2 · d9c2caa`
+`v0.8.0 · 7c5e1f0`

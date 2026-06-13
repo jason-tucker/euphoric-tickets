@@ -1,7 +1,13 @@
 # Euphoric Tickets — AI Coding Instructions
 
-See `/home/botuser/projects/claude-all.md` for VPS constraints, Discord.js
-patterns, Components V2, and database conventions that apply to all bots.
+> **Where am I running?** The cross-bot conventions file
+> `/home/botuser/projects/claude-all.md` exists **only on the production VPS**
+> — it is not in this repo and not available in Claude Code cloud sessions.
+> Everything from it that matters here is inlined below: never compile on the
+> VPS (rule 1), CI/CD via GHCR + watchtower (Bot restart section), Components
+> V2 for all bot-rendered messages, and the shared-Postgres/drizzle
+> conventions (rule 4). In a cloud session, `pnpm typecheck` and `pnpm test`
+> are safe and encouraged — the no-`tsc` rule is about the VPS box only.
 
 This bot is **not** a standalone app. It is the Discord half of the Euphoric
 Tickets system; the [`euphoric-tickets-web`](https://github.com/jason-tucker/euphoric-tickets-web)
@@ -16,8 +22,18 @@ See `README.md` for the full architecture; this file is the working agreement.
 ### 1. Never compile TypeScript on the VPS
 `pnpm build` / `pnpm typecheck` / `tsc` OOM the box. Compilation happens in
 GitHub Actions; the VPS pulls the pre-built GHCR image. Run `tsc --noEmit`
-**locally** before pushing — a type error silently blocks **all** deploys (CI
-builds the image, not the VPS). If you suspect a type error, describe it in chat.
+**locally** (or in a cloud session) before pushing. `.github/workflows/ci.yml`
+also gates every PR with typecheck + tests + the Dockerfile's tsc build, so a
+type error fails the PR instead of silently blocking deploys post-merge.
+
+### 1b. Run the tests — `pnpm test`
+Unit tests (vitest) live next to the code as `src/**/*.test.ts`, with shared
+helpers in `src/test/` (env stub + a queue-based drizzle `FakeDb`). They never
+touch Postgres or Discord. CI blocks PRs on failures. When you change a
+service with a `.test.ts` neighbour, update the tests in the same commit; new
+pure logic (permission gates, parsers, renderers) should land with tests.
+The production build uses `tsconfig.build.json`, which excludes test files
+from `dist`.
 
 ### 2. Always update `CHANGELOG.md`
 Per-PR semver bump under a dated section. Footer reads `v<x.y.z> · <sha>`. No `[Unreleased]`.

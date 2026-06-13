@@ -1,0 +1,55 @@
+name: CI
+
+# Pull-request gate. The deploy workflow only runs on push to `main`, so
+# before this there was nothing to fail a PR — a type error only surfaced
+# post-merge inside the deploy's Docker build, where it silently blocks
+# every deploy (CI builds the image, not the VPS — see CLAUDE.md rule 1).
+# This job runs the typecheck, the vitest suite, and the same tsc build the
+# Dockerfile runs, so the breakage fails the PR instead, and gives branch
+# protection a required check to gate auto-merge on.
+on:
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+# Least privilege: this job only needs to read the repo.
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Typecheck, test & build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      # Third-party actions are pinned to a commit SHA (tag in the comment) so a
+      # retargeted/compromised tag can't silently change what runs in CI.
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      # action-setup reads the pnpm version from package.json's
+      # `packageManager` field; it must run before setup-node's pnpm cache.
+      - name: Setup pnpm
+        uses: pnpm/action-setup@a15d269cd4658e1107c09f1fabf4cbd7bd1f308a # v4.4.0
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Test
+        run: pnpm test
+
+      # Mirrors the Dockerfile's builder stage (tsc -p tsconfig.build.json),
+      # which excludes *.test.ts so test code never lands in dist.
+      - name: Build
+        run: pnpm build

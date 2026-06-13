@@ -8,7 +8,7 @@ COPY package.json pnpm-lock.yaml ./
 RUN pnpm install --frozen-lockfile
 
 COPY . .
-RUN node --max-old-space-size=4096 node_modules/typescript/bin/tsc
+RUN node --max-old-space-size=4096 node_modules/typescript/bin/tsc -p tsconfig.build.json
 
 FROM node:24-alpine AS production
 
