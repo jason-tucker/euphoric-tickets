@@ -11,6 +11,32 @@ See `README.md` for the full architecture; this file is the working agreement.
 
 ---
 
+## Agent usage
+
+Always spawn agents to do work. Haiku for lookups. Sonnet for coding. Opus for planning.
+
+Use agents proactively — delegation is the default, not a fallback. Match the model to the task:
+
+- **Haiku** — file discovery, repository searches, quick lookups, lightweight analysis, and simple verification.
+- **Sonnet** — coding, implementation, refactoring, debugging, writing tests, editing documentation, and normal technical work.
+- **Opus** — architecture, complex planning, cross-repository strategy, high-risk changes, difficult debugging strategy, and final reconciliation.
+
+How to delegate well:
+
+- Run independent work in parallel; serialize only when there is a real dependency.
+- Give every delegated task a precise scope and a concrete expected output.
+- Require every agent to cite the paths, symbols, commands, or repository evidence behind its conclusions.
+- Demand actionable results, not generic summaries.
+- Never let two agents edit the same file at once — assign explicit file ownership and coordinate overlaps through the orchestrator.
+- Resolve conflicting recommendations with repository evidence, not preference.
+- Validate every agent's output before accepting it; re-run or re-scope on doubt.
+- Use agents to improve speed or quality — not to create pointless duplication.
+- The orchestrator reviews all delegated work and remains responsible for final correctness.
+
+`/home/botuser/projects/claude-all.md` (referenced above) is a VPS-side file and is NOT present in this repo — agents cannot read it. The constraints that matter are inlined here (never compile TypeScript on the VPS; run `pnpm typecheck` locally before pushing; the web app owns the schema).
+
+---
+
 ## Mandatory rules
 
 ### 1. Never compile TypeScript on the VPS
@@ -90,7 +116,7 @@ There is **no `ticket_settings` table.** Config is split across two tables:
 (anyone with Manage Server / a Ticket Master role / sudo — see the permission
 model below) that writes the few **business-level columns the bot still owns**
 (`discord_fallback_category_id`,
-`admin_role_ids`, `ticket_mode`, `ticket_tool_category_ids`) and can replace the
+`admin_role_ids`, `ticket_mode`, `ticket_tool_category_ids`, `ticket_tool_prefix`) and can replace the
 team's `ticket_categories` rows from a JSON array. Full category management
 (per-category roles, templates, parents) lives in the web UI.
 
@@ -119,6 +145,7 @@ the web UI, which owns the richer config.
 | `/tickets delete` | Admin | Hard-delete a closed ticket's channel |
 | `/admin sudo grant\|revoke\|list` | Sudo | Manage the sudo flag on user rows from Discord |
 | `/admin business create\|list\|delete` | Sudo | Manage team (business) rows |
+| `/help` | Everyone | Context-aware help based on the caller's permission tier |
 
 Slash commands are registered by `src/bot/registerCommands.ts`. CI deploys them
 with `node dist/bot/registerCommands.js` inside the built image; locally use
@@ -156,7 +183,9 @@ All ticket interactions are prefixed `tk:` and routed in
 - `tk:close_confirm:{ticketId}` / `tk:close_cancel:{ticketId}` — close confirmation
 - `tk:changecat:{ticketId}` — Category button on the welcome card → opens the category select
 - `tk:changecat_sel:{ticketId}` — category select menu
-- `tk:settings:{action}` / `tk:settings_modal:{key}` — settings UI
+- `tk:settings:edit:{teamSlug}` — Edit-settings button (opens the 5-field modal; `showModal` must be the first response, so this path never defers)
+- `tk:settings:togglemode:{teamSlug}` — TicketTool mode-toggle button (defers first — reconciling all watched channels can exceed Discord's 3-second window)
+- `tk:settings_modal:{teamSlug}` — modal submit for the settings editor (legacy modals may carry `all` as the slug; the handler falls back to the guild default for those)
 
 `/tickets add|remove|rename|list|assign|category|convert|delete` and
 `/admin …` are slash subcommands rather than buttons — they don't have customIds.
@@ -208,3 +237,61 @@ built image. Locally:
 ```bash
 pnpm commands:deploy
 ```
+
+---
+
+## Environment variables
+
+Derived from `src/config/env.ts` (Zod-validated at startup) plus `LEADER_ELECTION`, which is read directly via `process.env` in `src/bot/leader.ts`. Empty strings for the optional vars are coerced to `undefined` at startup so an unfilled `.env.example` line won't crash the bot.
+
+| Variable | Required | Description |
+|---|---|---|
+| `DISCORD_BOT_TOKEN` | Yes | Discord bot token. |
+| `DISCORD_CLIENT_ID` | Yes | Application (client) ID — a Discord snowflake. |
+| `GUILD_ID` | Yes | Guild used for slash-command registration (commands are guild-scoped — single-guild). Changing this requires re-running `pnpm commands:deploy` to register commands in the new guild and clear them from the old one. |
+| `DATABASE_URL` | Yes | Connection string for the **shared** Postgres owned by the web app. |
+| `SUDO_ROLE_IDS` | No | Comma-separated role snowflakes treated as bot owners everywhere. |
+| `SUDO_USER_IDS` | No | Comma-separated user snowflakes treated as bot owners everywhere. |
+| `BOT_OWNER_ID` | No | User snowflake that receives a startup "bot is up" DM. |
+| `WEB_BASE_URL` | No | Public URL of the web companion — used in every close-DM link and the notify bridge. Default `https://tickets.euphoric.fm`. |
+| `INTERNAL_TOKEN` | No | Shared secret (min 8 chars) authenticating the web ↔ bot internal HTTP endpoints (`POST /api/internal/dm` and related routes). **When unset the bot falls back to `DISCORD_BOT_TOKEN` as the secret and logs a loud startup warning** — set a dedicated value here and the identical value in the web app to avoid reusing the bot token as an HTTP auth header. |
+| `INTERNAL_PORT` | No | Port the bot's internal HTTP server binds. Keep on the private Docker network — never publish it to the host. Default `8787`. |
+| `LEADER_ELECTION` | No | Set to `off` to skip the Postgres advisory-lock leader-election wait on single-VPS deploys (read via `process.env`, not the Zod schema). |
+| `UPTIME_KUMA_PUSH_URL` | No | Uptime Kuma push URL for health heartbeats. |
+
+---
+
+## Local dev
+
+```bash
+pnpm install
+cp .env.example .env   # fill at minimum: DISCORD_BOT_TOKEN, DISCORD_CLIENT_ID, GUILD_ID, DATABASE_URL
+
+pnpm dev               # tsx watch — restarts on file change
+pnpm commands:deploy   # register slash commands in GUILD_ID (run once, or after adding/removing commands)
+
+# Type-check LOCALLY before pushing — running tsc on the VPS OOMs the box;
+# CI compiles the image and a type error silently blocks all deploys.
+pnpm typecheck
+```
+
+There is no automated test suite.
+
+---
+
+## Internal HTTP bridge
+
+`src/bot/internalHttp.ts` exposes a small authenticated HTTP server (bound to `INTERNAL_PORT`, default 8787) that the web calls to trigger actions through the bot's gateway connection. All routes require the `x-internal-token` header to match `INTERNAL_TOKEN` (falling back to `DISCORD_BOT_TOKEN` when `INTERNAL_TOKEN` is unset — see the warning above). Keep this server on the private Docker network; never publish the port to the host.
+
+Current endpoints:
+
+- `POST /api/internal/dm` — DM a Discord user through the bot.
+- `POST /api/internal/tickettool/command` — emit a TicketTool `$`-command in a ticket's channel.
+- `POST /api/internal/tickettool/reconcile` — back-grab open TicketTool tickets for a team.
+- `POST /api/internal/tickettool/reprocess-embeds` — re-pull embed text for already-ingested tickets.
+- `POST /api/internal/guild/leave` — make the bot leave a guild (team DB rows are left intact).
+- `POST /api/internal/bot/username` — set the bot's global Discord username.
+
+The reverse direction — bot → web — is handled by `src/services/notifyBridge.ts`: `dispatchNotify()` POSTs to the web's `/api/internal/notify` after Discord-origin ticket events (new ticket, new message relay) so the web can fan out browser and push notifications.
+
+**Schema ownership reminder.** The web companion (`euphoric-tickets-web`) runs `drizzle-kit push` on its own container start and is the **single owner of the schema**. This bot mirrors `src/db/schema/*.ts` from the web repo and must never push — its `docker-entrypoint.sh` only runs `exec node dist/index.js`. The `db:generate` and `db:push` scripts in `package.json` are for local/dev use only. Cross-reference: [`euphoric-tickets-web`](https://github.com/jason-tucker/euphoric-tickets-web).

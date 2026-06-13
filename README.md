@@ -108,9 +108,9 @@ Environment variables, derived from `src/config/env.ts` (plus `LEADER_ELECTION`,
 
 | Command | Access | What it does |
 |---|---|---|
-| `/panel post [team]` | sudo | Post a Components V2 ticket panel in this channel. On a multi-team server, choose which team's panel (autocompleted); one-team servers can omit it. |
-| `/panel refresh [message_id]` | sudo | Re-render an existing panel after a settings change (from the panel's own team, falling back to the guild default for older panels). |
-| `/tickets settings [team]` | sudo | View/edit a team's DB-backed config via an ephemeral panel + modal. Multi-team servers pick a team with `team:` (or get a slug list). |
+| `/panel post [team]` | Manage Server / Ticket Master / sudo | Post a Components V2 ticket panel in this channel. On a multi-team server, choose which team's panel (autocompleted); one-team servers can omit it. |
+| `/panel refresh [message_id]` | Manage Server / Ticket Master / sudo | Re-render an existing panel after a settings change (from the panel's own team, falling back to the guild default for older panels). |
+| `/tickets settings [team]` | Manage Server / Ticket Master / sudo | View/edit a team's DB-backed config via an ephemeral panel + modal. Multi-team servers pick a team with `team:` (or get a slug list). |
 | `/tickets claim` / `/tickets unclaim` | staff | Take or release the current ticket. |
 | `/tickets assign <user>` | staff | Assign the current ticket to a staff member. |
 | `/tickets close` | staff / opener | Close the current ticket (DMs the transcript to the opener, then deletes the channel). |
@@ -131,7 +131,7 @@ The welcome-card buttons mirror the in-channel controls: Claim, Close, Open in w
 
 | Tier | Who | Can |
 |---|---|---|
-| **admin / sudo** | guild `ADMINISTRATOR`, a role in the team's `admin_role_ids`, or a `SUDO_*` role/user | everything, including `/tickets delete`, `/tickets category`, `/tickets convert`, and settings |
+| **admin / sudo** | Discord **Manage Server** (which subsumes Administrator + the guild owner), a role in the team's `admin_role_ids` ("Ticket Master"), or a `SUDO_*` role/user | everything, including `/tickets delete`, `/tickets category`, `/tickets convert`, and settings |
 | **staff** | holds a role in the ticket category's `staff_role_ids` | claim / unclaim / assign / close / add / remove / rename |
 | **opener** | opened the ticket | close their own |
 
@@ -144,7 +144,7 @@ The welcome-card buttons mirror the in-channel controls: Claim, Close, Open in w
 
 ### Interaction customIds
 
-Buttons, selects and modals are routed by a `tk:` customId prefix in `src/bot/events/interactionCreate.ts`: `tk:open`, `tk:claim`, `tk:close`, `tk:close_confirm`, `tk:close_cancel`, `tk:changecat`, `tk:changecat_sel`, `tk:settings`, `tk:settings_modal`.
+Buttons, selects and modals are routed by a `tk:` customId prefix in `src/bot/events/interactionCreate.ts`: `tk:open:{categoryKey}`, `tk:claim:{ticketId}`, `tk:close:{ticketId}`, `tk:close_confirm:{ticketId}`, `tk:close_cancel:{ticketId}`, `tk:changecat:{ticketId}`, `tk:changecat_sel:{ticketId}`, `tk:settings:edit:{teamSlug}`, `tk:settings:togglemode:{teamSlug}`, `tk:settings_modal:{teamSlug}`.
 
 ## Deployment
 

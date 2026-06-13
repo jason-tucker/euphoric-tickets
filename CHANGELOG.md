@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.7.3] — 2026-06-13 — Docs: agent usage policy, env vars, local dev, internal HTTP bridge, README permission fixes
+
+### Docs
+- **`CLAUDE.md` — Agent usage policy** added as a new section between the opening paragraph and Mandatory rules: always spawn agents, Haiku for lookups, Sonnet for coding, Opus for planning; delegation is the default; full delegation hygiene checklist.
+- **`CLAUDE.md` — `/help` command** added to the Commands table (verified against `src/commands/help.ts` and `src/bot/registerCommands.ts`).
+- **`CLAUDE.md` — Settings customIds corrected** to the actual four-segment forms `tk:settings:edit:{teamSlug}`, `tk:settings:togglemode:{teamSlug}`, and `tk:settings_modal:{teamSlug}` (verified against `src/interactions/buttons/settingsButton.ts` and `src/interactions/modals/settingsModal.ts`).
+- **`CLAUDE.md` — `ticketToolPrefix`** added to the list of fields written by the settings modal (verified in `settingsModal.ts`).
+- **`CLAUDE.md` — Environment variables section** added, derived from `src/config/env.ts` + `LEADER_ELECTION` in `src/bot/leader.ts`.
+- **`CLAUDE.md` — Local dev section** added: `pnpm install`, `cp .env.example .env`, `pnpm dev`, `pnpm typecheck` (local-only reminder), `pnpm commands:deploy`; notes no automated test suite.
+- **`CLAUDE.md` — Internal HTTP bridge section** added: documents `src/bot/internalHttp.ts` endpoints, the `notifyBridge.ts` reverse direction, and the schema-ownership reminder cross-linking `euphoric-tickets-web`.
+- **`README.md` — Permission tables** corrected: `/panel post`, `/panel refresh`, and `/tickets settings` were listed as `sudo`-only but have accepted **Manage Server / Ticket Master / sudo** since v0.6.0 (`canManageGuildSettings`). The admin/sudo tier row was updated from `guild ADMINISTRATOR` to `Manage Server (which subsumes Administrator + the guild owner)` to match `isAdminForBusiness` in `src/services/permissions.ts`. Interaction customId list updated to the current four-segment forms.
+
+`v0.7.3 · 7c5e1f0`
+
 ## [0.7.2] — 2026-06-11 — Performance: defer slow buttons, parallel close flow, batched startup backfill
 
 ### Fixed
