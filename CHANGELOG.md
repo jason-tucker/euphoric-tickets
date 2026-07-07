@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.7.4] — 2026-07-06 — Docs: reconcile README with current code
+
+### Docs
+- **`README.md` — Auto-provisioning highlight added.** The bot has auto-provisioned a team for any guild it joins since v0.6.0 (`ensureBusinessForGuild`, wired into `guildCreate` + a startup backfill), but this was never called out in the README's Overview — added as a new Highlights bullet and cross-referenced from the Multi-team bullet.
+- **`README.md` — `app_settings` table added** to the "Full table list" in Architecture — it's mirrored from the web (bot-owner global key/value settings, e.g. `bot_name`) and was missing since it was introduced in v0.6.0.
+- **`README.md` — `ticket_categories` column list corrected** to include `description` and `sort_order` (present in `src/db/schema/ticketCategories.ts`, absent from the README's summary).
+- **`README.md` — Internal HTTP bridge section corrected.** It previously claimed the internal endpoints are "disabled" and notifications "degrade gracefully" when `INTERNAL_TOKEN` is unset; per `src/bot/internalHttp.ts` the server always starts and instead falls back to authenticating with `DISCORD_BOT_TOKEN` (logging a startup warning). Also expanded the endpoint list from "such as `POST /api/internal/dm`" to the full current route set (`tickettool/{command,reconcile,reprocess-embeds}`, `guild/leave`, `bot/username`), and fixed the matching `INTERNAL_TOKEN` row in the Configuration table.
+- No runtime code changed.
+
 ## [0.7.3] — 2026-06-13 — Docs: agent usage policy, env vars, local dev, internal HTTP bridge, README permission fixes
 
 ### Docs

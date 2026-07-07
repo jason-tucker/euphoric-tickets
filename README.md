@@ -21,7 +21,8 @@ It is **not** a standalone app. The bot and the web companion are two front-ends
 
 Highlights:
 
-- **Multi-team.** A single Discord server can host more than one team (a "business" row). Ticket categories, panels and settings are resolved per team — by the channel, the panel message, or the ticket category — so two teams can share a guild without colliding. `/panel post` and `/tickets settings` take an optional autocompleted `team:` option to target a specific team.
+- **Auto-provisioning.** The bot works on any server with zero manual setup. A `guildCreate` handler creates a team (`businesses` row) the moment the bot joins a guild, and a startup backfill does the same for every guild it's already in. Both go through the idempotent `ensureBusinessForGuild` — a no-op once a guild has at least one team — so the server shows up in the unified web dashboard immediately, no `/admin business create` required.
+- **Multi-team.** A single Discord server can host more than one team (a "business" row). Ticket categories, panels and settings are resolved per team — by the channel, the panel message, or the ticket category — so two teams can share a guild without colliding. `/panel post` and `/tickets settings` take an optional autocompleted `team:` option to target a specific team. (Auto-provisioning only ever creates the first team for a guild; extra teams are still added by hand or on the web.)
 - **Lifecycle synced to the web.** Claim, unclaim, assign, add/remove member, rename, close, reopen and change-category all reflect to the web in real time via Postgres triggers the web installs.
 - **DM transcript on close.** Closing a ticket renders an HTML transcript, DMs it to the opener (best-effort, with a link to the web ticket), then deletes the channel. There is no dedicated transcript/log channel.
 - **Convert + backfill.** `/tickets convert` turns an ordinary channel into a ticket and backfills up to 100 recent messages (with attachments).
@@ -40,15 +41,15 @@ Browser  ──▶  euphoric-tickets-web  ────────┘        (we
 
 - **Shared Postgres, web owns the schema.** The **web** repo runs `drizzle-kit push` on its own container start and is the single owner of the schema. This bot **mirrors** the same schema files under `src/db/schema/*.ts` and simply connects — its `docker-entrypoint.sh` does **not** push (that was removed to avoid a race over the same tables). Both stacks point `DATABASE_URL` at the same database (`tickets-db` on the shared `efm-public-net` network).
 - **Message relay.** `messageCreate` writes Discord messages and attachments into `ticket_messages`, deduplicated by `discord_message_id`. Internal-thread messages are tagged `source='internal'` and stay staff-private. Embeds (TicketTool cards/logs) are flattened to text and archived too.
-- **Internal HTTP bridge.** The bot runs a tiny HTTP server (`INTERNAL_PORT`, default 8787) exposing endpoints such as `POST /api/internal/dm`, authed by `INTERNAL_TOKEN`, so the web can DM a user through the gateway. The bot in turn calls the web's `/api/internal/notify` to fan out notifications for Discord-origin events. When `INTERNAL_TOKEN` is unset these endpoints are disabled and notifications degrade gracefully.
+- **Internal HTTP bridge.** The bot runs a tiny HTTP server (`INTERNAL_PORT`, default 8787) authed by `x-internal-token` matching `INTERNAL_TOKEN` (constant-time compare), exposing `POST /api/internal/dm` (DM a user through the gateway), `POST /api/internal/tickettool/{command,reconcile,reprocess-embeds}` (TicketTool coexistence), and `POST /api/internal/{guild/leave,bot/username}` (bot-owner Sudo dashboard controls). The bot in turn calls the web's `/api/internal/notify` to fan out notifications for Discord-origin events. When `INTERNAL_TOKEN` is unset the server still starts and falls back to authenticating with `DISCORD_BOT_TOKEN` (logging a loud startup warning) rather than disabling — set a dedicated `INTERNAL_TOKEN` (matching the web app) to avoid reusing the bot token as an HTTP secret.
 - **Live web refresh** is driven by Postgres `LISTEN/NOTIFY` triggers the web installs — the bot just writes rows; the web reacts.
 
 Configuration lives in database rows, not a settings table:
 
 - **`businesses`** — one row per team. Columns include `admin_role_ids` (CSV), `discord_fallback_category_id`, `discord_closed_category_id`, `delete_closed_after_days`, `ticket_mode` (`euphoric`/`tickettool`), `ticket_tool_category_ids`, and a free-form `settings` JSONB.
-- **`ticket_categories`** — one row per panel option, scoped to a team by `(business_id, key)`. Columns include `label`, `emoji`, `discord_parent_category_id`, `allow_role_ids` (who may open), `staff_role_ids` (who is staff for it), `first_message_template`, `staff_only`, and `kind` (`normal`/`project`).
+- **`ticket_categories`** — one row per panel option, scoped to a team by `(business_id, key)`. Columns include `label`, `emoji`, `description`, `sort_order`, `discord_parent_category_id`, `allow_role_ids` (who may open), `staff_role_ids` (who is staff for it), `first_message_template`, `staff_only`, and `kind` (`normal`/`project`).
 
-Full table list: `businesses`, `ticket_categories`, `tickets`, `ticket_messages`, `ticket_panels`, `users`, `business_members`, `audit_logs`, `bot_errors`, `user_notification_prefs`, `ticket_external_members`. (There is **no** `ticket_settings` table.)
+Full table list: `businesses`, `ticket_categories`, `tickets`, `ticket_messages`, `ticket_panels`, `users`, `business_members`, `audit_logs`, `bot_errors`, `user_notification_prefs`, `ticket_external_members`, `app_settings` (bot-owner global key/value settings, e.g. `bot_name`, written from the web's Sudo dashboard). (There is **no** `ticket_settings` table.)
 
 ## Stack
 
@@ -92,7 +93,7 @@ Environment variables, derived from `src/config/env.ts` (plus `LEADER_ELECTION`,
 | `DATABASE_URL` | Yes | Connection string for the **shared** Postgres owned by the web app. |
 | `NODE_ENV` | No | `development` \| `production` \| `test`. Default `development`. |
 | `WEB_BASE_URL` | No | Public URL of the web companion, used in close-DM links and the notify bridge. Default `https://tickets.euphoric.fm`. |
-| `INTERNAL_TOKEN` | No | Shared secret (min 8 chars) authenticating the web ↔ bot internal endpoints. Unset disables them and degrades notifications gracefully. |
+| `INTERNAL_TOKEN` | No | Shared secret (min 8 chars) authenticating the web ↔ bot internal endpoints. When unset, the internal HTTP server still starts but falls back to `DISCORD_BOT_TOKEN` as the auth secret (logging a startup warning) — set a dedicated value here and on the web app to avoid reusing the bot token as an HTTP secret. |
 | `INTERNAL_PORT` | No | Port for the bot's internal DM/HTTP server. Default `8787`. |
 | `SUDO_ROLE_IDS` | No | Comma-separated role snowflakes treated as bot owners everywhere. |
 | `SUDO_USER_IDS` | No | Comma-separated user snowflakes treated as bot owners everywhere. |
