@@ -130,7 +130,7 @@ the web UI, which owns the richer config.
 
 | Command | Access | Notes |
 |---|---|---|
-| `/panel post [team]` | Manage Server | Posts the panel to the current channel; stores message ID in `ticket_panels`. Multi-team servers choose `team:` (autocompleted); one-team servers omit it |
+| `/panel post [team] [channel]` | Manage Server | Posts the panel to `channel:` (default: current channel — read-only-to-members channels work; the bot needs View+Send there); stores message ID in `ticket_panels`. Multi-team servers choose `team:` (autocompleted). Appearance comes from `businesses.settings.panel` (web-edited), parsed by `parsePanelSettings` |
 | `/panel refresh [message_id]` | Manage Server | Re-renders an existing panel after settings change (from the panel's own team, falling back to the guild default for older panels) |
 | `/tickets settings [team]` | Manage Server | Edit a team's DB-backed config via ephemeral panel + modal. Multi-team servers pick a team with `team:` |
 | `/tickets claim` / `/tickets unclaim` | Staff | Take or release the current ticket |
@@ -143,6 +143,8 @@ the web UI, which owns the richer config.
 | `/tickets category <key>` | Admin | Move the current ticket to another category |
 | `/tickets convert [category] [subject] [opener]` | Admin | Turn the current channel into a ticket and backfill up to 100 recent messages (with attachments) |
 | `/tickets delete` | Admin | Hard-delete a closed ticket's channel |
+| `/tickets detach` | Admin | Remove the ticket integration from the channel **without deleting it** — closes the ticket, deletes the per-ticket webhook + welcome card (best-effort), nulls the `discord_*` linkage. Refused for TicketTool tickets / watched categories |
+| `/tickets open <user> <category> [team] [subject]` | Admin | Open a ticket on behalf of another member — target becomes the opener; the invoker is the audit/notify actor (`onBehalfOfDiscordId` metadata). `category` autocompletes across all teams |
 | `/admin sudo grant\|revoke\|list` | Sudo | Manage the sudo flag on user rows from Discord |
 | `/admin business create\|list\|delete` | Sudo | Manage team (business) rows |
 | `/help` | Everyone | Context-aware help based on the caller's permission tier |
@@ -291,6 +293,8 @@ Current endpoints:
 - `POST /api/internal/tickettool/reprocess-embeds` — re-pull embed text for already-ingested tickets.
 - `POST /api/internal/guild/leave` — make the bot leave a guild (team DB rows are left intact).
 - `POST /api/internal/bot/username` — set the bot's global Discord username.
+- `POST /api/internal/panel/post` — post a team's ticket panel into a channel (`{businessId, channelId}`); used by the web settings page.
+- `POST /api/internal/panel/refresh` — re-render every posted panel for a team (`{businessId}`); called after a web-side panel-settings save.
 
 The reverse direction — bot → web — is handled by `src/services/notifyBridge.ts`: `dispatchNotify()` POSTs to the web's `/api/internal/notify` after Discord-origin ticket events (new ticket, new message relay) so the web can fan out browser and push notifications.
 

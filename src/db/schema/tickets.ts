@@ -31,6 +31,9 @@ export const tickets = pgTable(
     openerUserId: uuid('opener_user_id')
       .notNull()
       .references(() => users.id),
+    // Snapshot of the opener's guild displayName at open time — preferred over
+    // the global users.name when the live guild-member fetch misses.
+    openerDisplayName: text('opener_display_name'),
     categoryId: uuid('category_id').references(() => ticketCategories.id),
     subject: text('subject').notNull(),
     status: text('status', { enum: ticketStatuses }).notNull().default('open'),

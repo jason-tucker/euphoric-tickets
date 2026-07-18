@@ -6,8 +6,8 @@ import {
   type TextChannel,
 } from 'discord.js'
 import { canManageGuildSettings } from '../services/permissions'
-import { getPanelCategories } from '../services/settingsService'
-import { getBusinessesByGuildId } from '../services/businessResolver'
+import { getPanelCategories, parsePanelSettings } from '../services/settingsService'
+import { getBusinessByGuildId, getBusinessesByGuildId } from '../services/businessResolver'
 import { buildPanelMessage } from '../services/ticketRenderer'
 import { db } from '../db/client'
 import { ticketPanels } from '../db/schema/ticketPanels'
@@ -20,12 +20,19 @@ export const data = new SlashCommandBuilder()
   .addSubcommand((sc) =>
     sc
       .setName('post')
-      .setDescription('Post the ticket panel in this channel')
+      .setDescription('Post the ticket panel')
       .addStringOption((opt) =>
         opt
           .setName('team')
           .setDescription('Which team (only needed when this server hosts more than one)')
           .setAutocomplete(true)
+          .setRequired(false),
+      )
+      .addChannelOption((opt) =>
+        opt
+          .setName('channel')
+          .setDescription('Channel to post the panel in (defaults to here) — read-only channels work fine')
+          .addChannelTypes(ChannelType.GuildText)
           .setRequired(false),
       ),
   )
@@ -64,15 +71,23 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
 }
 
 async function postPanel(interaction: ChatInputCommandInteraction): Promise<void> {
-  if (!interaction.channel || interaction.channel.type !== ChannelType.GuildText) {
-    await interaction.reply({ content: 'Run this in a regular text channel.', ephemeral: true })
+  // Optional target channel — lets admins post into a read-only/locked channel
+  // without needing to run the command inside it (users only need to click the
+  // buttons there, never to send messages).
+  const target = interaction.options.getChannel('channel')
+  const channel = (target ?? interaction.channel) as TextChannel | null
+  if (!channel || channel.type !== ChannelType.GuildText) {
+    await interaction.reply({
+      content: target ? 'Pick a regular text channel.' : 'Run this in a regular text channel (or pass `channel:`).',
+      ephemeral: true,
+    })
     return
   }
-  const channel = interaction.channel as TextChannel
 
   const botMember = await interaction.guild!.members.fetchMe()
-  if (!channel.permissionsFor(botMember)?.has(PermissionFlagsBits.SendMessages)) {
-    await interaction.reply({ content: "I can't send messages here.", ephemeral: true })
+  const perms = channel.permissionsFor(botMember)
+  if (!perms?.has(PermissionFlagsBits.ViewChannel) || !perms.has(PermissionFlagsBits.SendMessages)) {
+    await interaction.reply({ content: `I can't view or send messages in <#${channel.id}>.`, ephemeral: true })
     return
   }
 
@@ -109,7 +124,7 @@ async function postPanel(interaction: ChatInputCommandInteraction): Promise<void
   }
 
   const categories = await getPanelCategories(interaction.guild!.id, business)
-  const payload = buildPanelMessage(categories)
+  const payload = buildPanelMessage(categories, parsePanelSettings(business.settings))
 
   const sent = await channel.send(payload as any)
 
@@ -157,14 +172,16 @@ async function refreshPanel(interaction: ChatInputCommandInteraction): Promise<v
   }
 
   // Refresh from the panel's OWN team (multi-team servers), falling back to the
-  // guild default for older panels that predate stored team ids.
-  let panelBiz: { id: string } | null = null
+  // guild default for older panels that predate stored team ids. Keep the full
+  // row — the renderer needs settings.panel, not just the id.
+  let panelBiz: typeof businesses.$inferSelect | null = null
   if (panelRow.businessId) {
     const [biz] = await db.select().from(businesses).where(eq(businesses.id, panelRow.businessId)).limit(1)
     panelBiz = biz ?? null
   }
+  if (!panelBiz) panelBiz = await getBusinessByGuildId(interaction.guild!.id)
   const categories = await getPanelCategories(interaction.guild!.id, panelBiz)
-  const payload = buildPanelMessage(categories)
+  const payload = buildPanelMessage(categories, parsePanelSettings(panelBiz?.settings))
   await message.edit(payload as any)
   await interaction.editReply(`✓ Refreshed panel \`${panelRow.messageId}\` in <#${panelRow.channelId}>.`)
 }

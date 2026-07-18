@@ -18,17 +18,18 @@ import { and, asc, eq, ne } from 'drizzle-orm'
 import { db } from '../db/client'
 import { tickets, type Ticket } from '../db/schema/tickets'
 import { ticketCategories } from '../db/schema/ticketCategories'
-import { businesses } from '../db/schema/businesses'
+import { businesses, type Business } from '../db/schema/businesses'
 import { isSudoUser } from '../services/sudoService'
 import {
   getCategoryId,
   getPanelCategories,
   getStaffRoleIds,
 } from '../services/settingsService'
-import { changeTicketCategory, claimTicket, closeTicket } from '../services/ticketService'
+import { changeTicketCategory, claimTicket, closeTicket, openTicket } from '../services/ticketService'
 import { runTicketToolCommand, type TicketToolAction } from '../services/ticketToolControl'
+import { isWatchedTicketToolChannel } from '../services/ticketToolIngest'
 import { buildCloseConfirm } from '../services/ticketRenderer'
-import { getBusinessByGuildId, getBusinessesByGuildId } from '../services/businessResolver'
+import { getBusinessByGuildId, getBusinessesByGuildId, getBusinessBySlugInGuild } from '../services/businessResolver'
 import { getDiscordIdForUserId, getOrCreateUserByDiscordId } from '../services/userResolver'
 import {
   canManageGuildSettings,
@@ -38,6 +39,7 @@ import {
 } from '../services/permissions'
 import { log } from '../services/logger'
 import { postTicketStatus } from '../services/ticketStatus'
+import { writeAudit } from '../services/audit'
 import { backfillChannelMessages } from '../services/messageBackfill'
 import { env } from '../config/env'
 
@@ -97,6 +99,11 @@ export const data = new SlashCommandBuilder()
   )
   .addSubcommand((sc) =>
     sc
+      .setName('detach')
+      .setDescription('Remove the ticket from this channel — the channel is kept, the ticket is closed'),
+  )
+  .addSubcommand((sc) =>
+    sc
       .setName('category')
       .setDescription("Change this ticket's category (admin)")
       .addStringOption((opt) =>
@@ -117,6 +124,25 @@ export const data = new SlashCommandBuilder()
         opt.setName('opener').setDescription('Who opened this (optional; defaults to you)').setRequired(false),
       ),
   )
+  .addSubcommand((sc) =>
+    sc
+      .setName('open')
+      .setDescription('Open a ticket on behalf of another member (admin)')
+      .addUserOption((opt) => opt.setName('user').setDescription('Who the ticket is for').setRequired(true))
+      .addStringOption((opt) =>
+        opt.setName('category').setDescription('Ticket category key').setRequired(true).setAutocomplete(true),
+      )
+      .addStringOption((opt) =>
+        opt
+          .setName('team')
+          .setDescription('Which team (only needed when the category key exists in more than one)')
+          .setAutocomplete(true)
+          .setRequired(false),
+      )
+      .addStringOption((opt) =>
+        opt.setName('subject').setDescription('Ticket subject (optional)').setRequired(false).setMaxLength(120),
+      ),
+  )
   .setDMPermission(false)
 
 export async function execute(interaction: ChatInputCommandInteraction): Promise<void> {
@@ -135,7 +161,9 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
   if (sub === 'rename') return await renameTicket(interaction)
   if (sub === 'list') return await listTickets(interaction)
   if (sub === 'delete') return await deleteHere(interaction)
+  if (sub === 'detach') return await detachHere(interaction)
   if (sub === 'convert') return await convertHere(interaction)
+  if (sub === 'open') return await openOnBehalf(interaction)
   if (sub === 'category') return await changeCategoryHere(interaction)
 }
 
@@ -256,6 +284,7 @@ async function convertHere(interaction: ChatInputCommandInteraction): Promise<vo
     .values({
       businessId: business.id,
       openerUserId,
+      openerDisplayName: openerMember?.displayName ?? null,
       categoryId,
       subject,
       status: 'open',
@@ -292,6 +321,109 @@ async function convertHere(interaction: ChatInputCommandInteraction): Promise<vo
   await interaction.editReply(
     `✓ Converted to **ticket #${row.id}** — imported ${imported} message${imported === 1 ? '' : 's'}.\n${webUrl}`,
   )
+}
+
+// Admin-only: open a ticket for another member. The target becomes the opener
+// — channel perms, welcome card, pings all key off them — while the invoker is
+// attributed as the actor in the audit + notify streams.
+async function openOnBehalf(interaction: ChatInputCommandInteraction): Promise<void> {
+  const member = await interaction.guild!.members.fetch(interaction.user.id)
+  const catKey = interaction.options.getString('category', true).trim().toLowerCase()
+  const teamSlug = interaction.options.getString('team')?.trim() || null
+
+  // Team resolution mirrors convert: an explicit team: pins it; otherwise the
+  // category key is looked up across every team in the guild and must be
+  // unambiguous.
+  let business: Business | null = null
+  if (teamSlug) {
+    business = await getBusinessBySlugInGuild(interaction.guild!.id, teamSlug)
+    if (!business) {
+      await interaction.reply({ content: `No team \`${teamSlug}\` in this server.`, ephemeral: true })
+      return
+    }
+    const [cat] = await db
+      .select({ id: ticketCategories.id })
+      .from(ticketCategories)
+      .where(and(eq(ticketCategories.businessId, business.id), eq(ticketCategories.key, catKey)))
+      .limit(1)
+    if (!cat) {
+      await interaction.reply({
+        content: `Unknown category \`${catKey}\` in team \`${business.slug}\`.${await validKeysSuffix(business.id)}`,
+        ephemeral: true,
+      })
+      return
+    }
+  } else {
+    const hits = await db
+      .select({ biz: businesses })
+      .from(ticketCategories)
+      .innerJoin(businesses, eq(businesses.id, ticketCategories.businessId))
+      .where(and(eq(businesses.discordGuildId, interaction.guild!.id), eq(ticketCategories.key, catKey)))
+    if (hits.length > 1) {
+      await interaction.reply({
+        content: `Category \`${catKey}\` exists in more than one team — re-run with \`team:\` set to one of: ${hits
+          .map((h) => `\`${h.biz.slug}\``)
+          .join(', ')}.`,
+        ephemeral: true,
+      })
+      return
+    }
+    business = hits[0]?.biz ?? null
+    if (!business) {
+      const fallback = await getBusinessByGuildId(interaction.guild!.id)
+      if (!fallback) {
+        await interaction.reply({
+          content:
+            'This server is not configured as a team — ask an admin to create one at https://tickets.euphoric.fm/admin.',
+          ephemeral: true,
+        })
+        return
+      }
+      await interaction.reply({
+        content: `Unknown category \`${catKey}\`.${await validKeysSuffix(fallback.id)}`,
+        ephemeral: true,
+      })
+      return
+    }
+  }
+
+  if (!isAdminForBusiness(member, business)) {
+    await interaction.reply({ content: 'Only admins can open a ticket on behalf of another member.', ephemeral: true })
+    return
+  }
+
+  const target = interaction.options.getUser('user', true)
+  const targetMember = await interaction.guild!.members.fetch(target.id).catch(() => null)
+  if (!targetMember) {
+    await interaction.reply({ content: "That user isn't a member of this server.", ephemeral: true })
+    return
+  }
+
+  await interaction.deferReply({ ephemeral: true })
+
+  const result = await openTicket({
+    guild: interaction.guild!,
+    opener: targetMember,
+    categoryKey: catKey,
+    business,
+    actor: member,
+    subjectOverride: interaction.options.getString('subject')?.trim() || undefined,
+  })
+  if (!result.ok) {
+    await interaction.editReply(result.reason)
+    return
+  }
+  await interaction.editReply(`✓ Ticket #${result.ticket.id} opened for <@${target.id}>: <#${result.channel.id}>`)
+}
+
+// "Valid keys: `a`, `b`" suffix for unknown-category errors; empty when the
+// team has no openable categories.
+async function validKeysSuffix(businessId: string): Promise<string> {
+  const keys = await db
+    .select({ key: ticketCategories.key })
+    .from(ticketCategories)
+    .where(and(eq(ticketCategories.businessId, businessId), eq(ticketCategories.staffOnly, false)))
+  return keys.length ? ` Valid keys: ${keys.map((k) => `\`${k.key}\``).join(', ')}.` : ''
 }
 
 // Shared shape for ticket-scoped commands. Looks up the business + ticket by
@@ -830,6 +962,110 @@ async function deleteHere(interaction: ChatInputCommandInteraction): Promise<voi
   await channel
     .delete(`Ticket #${ctx.ticket.id} hard-deleted by ${ctx.member.user.tag}`)
     .catch((err) => log.warn('Channel delete failed', { ticketId: ctx.ticket.id, err: String(err) }))
+}
+
+// Admin-only: unbind the ticket from this channel WITHOUT deleting it. The
+// channel and its history stay; the ticket is closed and its discord_*
+// linkage nulled (same null-out pattern as delete/cleanup). No transcript
+// DM — the history lives on in the channel.
+async function detachHere(interaction: ChatInputCommandInteraction): Promise<void> {
+  const ctx = await loadCtx(interaction)
+  if (!ctx) return
+  if (await routeExternalTicket(interaction, ctx, 'refuse')) return
+  if (!ctx.access.canDelete) {
+    await interaction.reply({ content: 'Only admins can detach a ticket from its channel.', ephemeral: true })
+    return
+  }
+
+  const channel = interaction.channel as TextChannel | null
+  if (!channel) {
+    await interaction.reply({ content: 'Channel context missing.', ephemeral: true })
+    return
+  }
+
+  // Under a watched TicketTool category the lazy ingest (messageCreate /
+  // channelCreate / startup reconcile) would immediately re-create a shadow
+  // ticket for this channel, making the detach a no-op.
+  if (isWatchedTicketToolChannel(ctx.business, channel)) {
+    await interaction.reply({
+      content:
+        'This channel sits under a watched TicketTool category — detaching would just re-ingest it as a new ticket. Move it out of the watched category first.',
+      ephemeral: true,
+    })
+    return
+  }
+
+  await interaction.deferReply({ ephemeral: true })
+
+  // Best-effort steps below mirror closeTicket: one failure must not abort
+  // the rest of the detach.
+
+  // The per-ticket webhook lives ON this channel — left alive, web replies
+  // would fall back to the business webhook and leak into whatever channel
+  // that targets.
+  if (ctx.ticket.discordWebhookId) {
+    try {
+      const wh = await interaction.client.fetchWebhook(ctx.ticket.discordWebhookId)
+      await wh.delete(`Ticket #${ctx.ticket.id} detached by ${ctx.member.user.tag}`)
+    } catch (err) {
+      log.warn('detach: webhook delete failed', { ticketId: ctx.ticket.id, err: String(err) })
+    }
+  }
+
+  // Best-effort remove the welcome card — its Claim/Close/Category buttons
+  // carry the ticket id and would keep acting on the row from a foreign
+  // channel. Skip silently when not found (e.g. convert-created tickets).
+  try {
+    const oldest = await channel.messages.fetch({ after: '0', limit: 25 })
+    const needle = new RegExp(`"tk:(claim|close|changecat):${ctx.ticket.id}"`)
+    const card = oldest.find(
+      (m) => m.author.id === interaction.client.user.id && needle.test(JSON.stringify(m.components)),
+    )
+    if (card) await card.delete()
+  } catch (err) {
+    log.warn('detach: welcome card delete failed', { ticketId: ctx.ticket.id, err: String(err) })
+  }
+
+  await postTicketStatus(channel, `Ticket #${ctx.ticket.id} detached — this channel is no longer a ticket.`)
+
+  const detacherUserId = await getOrCreateUserByDiscordId(ctx.member.id, {
+    name: ctx.member.user.globalName ?? ctx.member.user.username,
+    image: ctx.member.user.displayAvatarURL(),
+  })
+
+  await db
+    .update(tickets)
+    .set({
+      status: 'closed',
+      closedAt: new Date(),
+      closedByUserId: detacherUserId,
+      lastActivityAt: new Date(),
+      discordChannelId: null,
+      discordWebhookId: null,
+      discordWebhookUrl: null,
+      discordInternalThreadId: null,
+    })
+    .where(eq(tickets.id, ctx.ticket.id))
+
+  await writeAudit({
+    businessId: ctx.business.id,
+    ticketId: ctx.ticket.id,
+    actorUserId: detacherUserId,
+    action: 'channel_detached',
+    metadata: { via: 'bot' },
+  })
+  await writeAudit({
+    businessId: ctx.business.id,
+    ticketId: ctx.ticket.id,
+    actorUserId: detacherUserId,
+    action: 'closed',
+    metadata: { via: 'detach' },
+  })
+
+  await interaction.editReply(
+    `✓ Ticket #${ctx.ticket.id} detached — the channel and its message history are kept; the ticket is closed. ` +
+      'No transcript was DMed (the history stays right here).',
+  )
 }
 
 export async function executeCloseConfirm(opts: {

@@ -13,13 +13,18 @@ import {
 } from '../../interactions/buttons/ticketChangeCategory'
 import { handleSettingsModalSubmit } from '../../interactions/modals/settingsModal'
 import { handleTeamAutocomplete } from '../../interactions/teamAutocomplete'
+import { handleCategoryAutocomplete } from '../../interactions/categoryAutocomplete'
 import { log } from '../../services/logger'
 
 export function registerInteractionCreate(client: Client): void {
   client.on('interactionCreate', async (interaction: Interaction) => {
     try {
       if (interaction.isAutocomplete()) {
-        // Only the shared `team` option uses autocomplete today.
+        // Two autocompleted options exist: the shared `team` slug picker and
+        // the `category` key picker on /tickets open.
+        if (interaction.options.getFocused(true).name === 'category') {
+          return await handleCategoryAutocomplete(interaction)
+        }
         return await handleTeamAutocomplete(interaction)
       }
 

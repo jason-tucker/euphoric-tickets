@@ -11,6 +11,50 @@ export type PanelCategory = {
   description?: string
 }
 
+// Per-team panel appearance, stored in businesses.settings JSONB under the
+// "panel" key by the web settings editor. Every field is optional — absent
+// fields fall back to the renderer's hardcoded defaults, so a team with no
+// customization renders exactly the pre-0.8 panel.
+export type PanelSettings = {
+  accentColor?: number
+  title?: string
+  body?: string
+  imageUrl?: string
+  buttonStyle?: 'primary' | 'secondary' | 'success' | 'danger'
+  showCategoryDescriptions?: boolean
+}
+
+const PANEL_BUTTON_STYLES = ['primary', 'secondary', 'success', 'danger'] as const
+
+// Defensive parse of businesses.settings → PanelSettings. The web validates on
+// write, but the JSONB is free-form — ignore anything malformed rather than
+// throwing mid-render.
+export function parsePanelSettings(settings: unknown): PanelSettings {
+  const out: PanelSettings = {}
+  if (typeof settings !== 'object' || settings === null) return out
+  const panel = (settings as Record<string, unknown>).panel
+  if (typeof panel !== 'object' || panel === null) return out
+  const p = panel as Record<string, unknown>
+
+  if (typeof p.accentColor === 'string' && /^#[0-9a-f]{6}$/i.test(p.accentColor)) {
+    out.accentColor = parseInt(p.accentColor.slice(1), 16)
+  }
+  if (typeof p.title === 'string' && p.title.trim()) out.title = p.title.trim().slice(0, 100)
+  if (typeof p.body === 'string' && p.body.trim()) out.body = p.body.trim().slice(0, 1000)
+  if (
+    typeof p.imageUrl === 'string' &&
+    p.imageUrl.length <= 512 &&
+    p.imageUrl.startsWith('https://')
+  ) {
+    out.imageUrl = p.imageUrl
+  }
+  if (PANEL_BUTTON_STYLES.includes(p.buttonStyle as (typeof PANEL_BUTTON_STYLES)[number])) {
+    out.buttonStyle = p.buttonStyle as PanelSettings['buttonStyle']
+  }
+  if (p.showCategoryDescriptions === true) out.showCategoryDescriptions = true
+  return out
+}
+
 const SNOWFLAKE_RE = /^\d{17,20}$/
 
 export const DEFAULT_PANEL_CATEGORIES: PanelCategory[] = [

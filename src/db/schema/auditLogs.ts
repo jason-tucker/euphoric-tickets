@@ -24,6 +24,7 @@ export const auditActions = [
   'closed',
   'reopened',
   'channel_deleted',
+  'channel_detached',
   'renamed',
 ] as const
 export type AuditAction = (typeof auditActions)[number]

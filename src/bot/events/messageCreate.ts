@@ -79,6 +79,8 @@ async function handleMessage(msg: Message): Promise<void> {
       categoryId: tickets.categoryId,
       subject: tickets.subject,
       externalSource: tickets.externalSource,
+      openerUserId: tickets.openerUserId,
+      openerDisplayName: tickets.openerDisplayName,
     })
     .from(tickets)
     .where(
@@ -107,6 +109,8 @@ async function handleMessage(msg: Message): Promise<void> {
             categoryId: tickets.categoryId,
             subject: tickets.subject,
             externalSource: tickets.externalSource,
+            openerUserId: tickets.openerUserId,
+            openerDisplayName: tickets.openerDisplayName,
           })
           .from(tickets)
           .where(eq(tickets.id, ticketId))
@@ -144,9 +148,16 @@ async function handleMessage(msg: Message): Promise<void> {
     attachments,
   })
 
+  // Refresh the opener's display-name snapshot when it drifted — msg.member is
+  // already on the gateway payload, so this costs no extra fetch.
+  const freshOpenerName =
+    authorUserId === row.openerUserId && msg.member && msg.member.displayName !== row.openerDisplayName
+      ? msg.member.displayName
+      : null
+
   await db
     .update(tickets)
-    .set({ lastActivityAt: sql`now()` })
+    .set({ lastActivityAt: sql`now()`, ...(freshOpenerName ? { openerDisplayName: freshOpenerName } : {}) })
     .where(eq(tickets.id, row.id))
 
   // TicketTool coexistence — when TicketTool announces a close/reopen in the

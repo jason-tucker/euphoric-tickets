@@ -3,34 +3,67 @@ import {
   ButtonBuilder,
   ButtonStyle,
   ContainerBuilder,
+  MediaGalleryBuilder,
+  MediaGalleryItemBuilder,
   MessageFlags,
   SeparatorBuilder,
   SeparatorSpacingSize,
   TextDisplayBuilder,
 } from 'discord.js'
-import type { PanelCategory } from './settingsService'
+import type { PanelCategory, PanelSettings } from './settingsService'
 
 const ACCENT = 0xa855f7
+
+const PANEL_DEFAULT_TITLE = '## 🎫 Open a Ticket'
+const PANEL_DEFAULT_BODY =
+  'Need help? Pick a category below to open a private ticket with the staff team.\n' +
+  'Only you and staff will see the channel.'
+
+const PANEL_BUTTON_STYLE: Record<NonNullable<PanelSettings['buttonStyle']>, ButtonStyle> = {
+  primary: ButtonStyle.Primary,
+  secondary: ButtonStyle.Secondary,
+  success: ButtonStyle.Success,
+  danger: ButtonStyle.Danger,
+}
 
 function sep() {
   return new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true)
 }
 
-export function buildPanelMessage(categories: PanelCategory[]) {
-  const container = new ContainerBuilder()
-    .setAccentColor(ACCENT)
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent('## 🎫 Open a Ticket'))
-    .addSeparatorComponents(sep())
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent(
-      'Need help? Pick a category below to open a private ticket with the staff team.\n' +
-      'Only you and staff will see the channel.'
-    ))
+// Panel appearance is per-team (businesses.settings.panel, edited on the web);
+// with no settings the output is byte-identical to the pre-customization panel.
+export function buildPanelMessage(categories: PanelCategory[], panel: PanelSettings = {}) {
+  const title = panel.title ? (panel.title.startsWith('#') ? panel.title : `## ${panel.title}`) : PANEL_DEFAULT_TITLE
 
+  const container = new ContainerBuilder()
+    .setAccentColor(panel.accentColor ?? ACCENT)
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent(title))
+    .addSeparatorComponents(sep())
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent(panel.body ?? PANEL_DEFAULT_BODY))
+
+  if (panel.showCategoryDescriptions) {
+    const lines = categories
+      .slice(0, 5)
+      .filter((c) => c.description)
+      .map((c) => `**${c.emoji ? `${c.emoji} ` : ''}${c.label}** — ${c.description}`)
+    if (lines.length > 0) {
+      container.addSeparatorComponents(sep())
+      container.addTextDisplayComponents(new TextDisplayBuilder().setContent(lines.join('\n')))
+    }
+  }
+
+  if (panel.imageUrl) {
+    container.addMediaGalleryComponents(
+      new MediaGalleryBuilder().addItems(new MediaGalleryItemBuilder().setURL(panel.imageUrl)),
+    )
+  }
+
+  const style = PANEL_BUTTON_STYLE[panel.buttonStyle ?? 'primary']
   const buttons = categories.slice(0, 5).map((cat) => {
     const btn = new ButtonBuilder()
       .setCustomId(`tk:open:${cat.key}`)
       .setLabel(cat.label.slice(0, 80))
-      .setStyle(ButtonStyle.Primary)
+      .setStyle(style)
     if (cat.emoji) btn.setEmoji(cat.emoji)
     return btn
   })

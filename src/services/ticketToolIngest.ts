@@ -46,7 +46,9 @@ export function isWatchedTicketToolChannel(
 // hook). Order: (1) the single human member permission-overwrite TicketTool
 // grants the opener; (2) the @mention in TicketTool's welcome message; (3) the
 // first human author.
-async function resolveExternalOpener(channel: TextChannel): Promise<string | null> {
+async function resolveExternalOpener(
+  channel: TextChannel,
+): Promise<{ userId: string; displayName: string | null } | null> {
   const botId = channel.client.user?.id
 
   // 1. Member permission overwrites that grant ViewChannel, minus the bot(s).
@@ -57,10 +59,11 @@ async function resolveExternalOpener(channel: TextChannel): Promise<string | nul
     if (o.id === botId) continue
     const member = await channel.guild.members.fetch(o.id).catch(() => null)
     if (!member || member.user.bot) continue
-    return getOrCreateUserByDiscordId(member.id, {
+    const userId = await getOrCreateUserByDiscordId(member.id, {
       name: member.user.globalName ?? member.user.username,
       image: member.user.displayAvatarURL(),
     })
+    return { userId, displayName: member.displayName }
   }
 
   // 2/3. Scan the earliest messages: a bot-authored welcome that @mentions a
@@ -72,18 +75,21 @@ async function resolveExternalOpener(channel: TextChannel): Promise<string | nul
       if (!msg.author.bot) continue
       const mentioned = msg.mentions.users.find((u) => !u.bot)
       if (mentioned) {
-        return getOrCreateUserByDiscordId(mentioned.id, {
+        const userId = await getOrCreateUserByDiscordId(mentioned.id, {
           name: mentioned.globalName ?? mentioned.username,
           image: mentioned.displayAvatarURL(),
         })
+        const member = await channel.guild.members.fetch(mentioned.id).catch(() => null)
+        return { userId, displayName: member?.displayName ?? null }
       }
     }
     for (const msg of ordered) {
       if (msg.author.bot) continue
-      return getOrCreateUserByDiscordId(msg.author.id, {
+      const userId = await getOrCreateUserByDiscordId(msg.author.id, {
         name: msg.author.globalName ?? msg.author.username,
         image: msg.author.displayAvatarURL(),
       })
+      return { userId, displayName: msg.member?.displayName ?? null }
     }
   } catch (err) {
     log.warn('tickettool: opener resolution fetch failed', { channelId: channel.id, err: String(err) })
@@ -109,8 +115,9 @@ export async function ensureShadowTicket(
     .limit(1)
   if (existing) return existing.id
 
-  const openerUserId = await resolveExternalOpener(channel)
-  if (!openerUserId) return null // defer — retried on the next message
+  const opener = await resolveExternalOpener(channel)
+  if (!opener) return null // defer — retried on the next message
+  const openerUserId = opener.userId
 
   const subject = `#${channel.name}`.slice(0, 120)
   let ticketId: number
@@ -120,6 +127,7 @@ export async function ensureShadowTicket(
       .values({
         businessId: biz.id,
         openerUserId,
+        openerDisplayName: opener.displayName,
         subject,
         status: 'open',
         externalSource: 'tickettool',

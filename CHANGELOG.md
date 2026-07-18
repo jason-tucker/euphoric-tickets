@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.8.0] — 2026-07-18 — Detach, open-on-behalf, customizable panels, panel post-to-channel, server-name snapshots
+
+### Added
+- **`/tickets detach` (admin).** Removes the ticket integration from a channel **without deleting the channel**: best-effort deletes the per-ticket webhook (so web replies can't leak through the business fallback) and the welcome card (its Claim/Close/Category buttons would keep acting on the row), posts a final status footer, closes the ticket, and nulls the `discord_*` linkage (the same null-out pattern as delete/cleanup). No transcript DM — the history stays in the channel. Refused for TicketTool tickets and for channels under a watched TicketTool category (lazy ingest would immediately re-adopt them). Writes the new `channel_detached` audit action plus a `closed` row (`via: 'detach'`).
+- **`/tickets open user: category: [team] [subject]` (admin).** Opens a ticket on behalf of another member — the target becomes the opener (channel perms, welcome card, ping, dedupe guard) while the invoker is attributed as the actor in the audit + notify streams (`metadata.onBehalfOfDiscordId`). The `category` option autocompletes across every team in the guild (new `src/interactions/categoryAutocomplete.ts`; the autocomplete router now branches on the focused option). Ambiguous keys on multi-team servers ask for `team:`. Requires a slash-command re-deploy (`pnpm commands:deploy`; CI does this on release).
+- **`openTicket()` gains `actor` + `subjectOverride`** — on-behalf opens skip the opener's `allow_role_ids` gate (the command already admin-gated the actor), name the target in the duplicate-open refusal, and attribute audit/notify to the actor.
+- **Customizable ticket panel.** `buildPanelMessage` now renders per-team appearance from `businesses.settings.panel` (written by the web settings editor; defensively parsed by the new `parsePanelSettings` in `settingsService.ts`): accent color, title, body, an optional image, button style, and optional per-category description lines. With no settings the panel is byte-identical to before. `/panel refresh` threads the full team row through so customization propagates to existing panels.
+- **`/panel post channel:` option** — post the panel into any text channel without running the command inside it (the bot checks its own View + Send perms on the target). Read-only-to-members channels work: opening tickets is interaction-only.
+- **Internal HTTP: `POST /api/internal/panel/post` + `POST /api/internal/panel/refresh`** — the web's settings page posts a team's panel into a chosen channel and re-renders every posted panel after a settings save, through the bot's gateway connection. Same `x-internal-token` auth as the existing routes; both invalidate the business cache first so just-saved settings apply. New `getBusinessById` in `businessResolver.ts`.
+- **`tickets.opener_display_name` snapshot** (schema mirrored from the web, which owns it): stamped with the opener's guild `displayName` at `openTicket` and `/tickets convert`, and refreshed by the message relay when the opener's server name drifts (`msg.member` is already on the gateway payload — no extra fetch). The web's `/tickets` console prefers live nickname → this snapshot → global name.
+- **`channel_detached` audit action** added to the mirrored `auditLogs.ts` enum (both repos).
+
+v0.8.0 · 6c8fe02
+
 ## [0.7.4] — 2026-07-06 — Docs: reconcile README with current code
 
 ### Docs

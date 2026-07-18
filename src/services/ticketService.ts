@@ -43,8 +43,14 @@ export async function openTicket(opts: {
   // a multi-team guild opens under the panel's team; falls back to the guild's
   // default team when omitted.
   business?: ResolvedBusiness
+  // Set when someone opens on behalf of the opener (/tickets open) — the audit
+  // + notify streams then attribute the actor, and the opener's allow-role
+  // gate is skipped (the command already admin-gated the actor).
+  actor?: GuildMember
+  subjectOverride?: string
 }): Promise<OpenResult> {
   const { guild, opener, categoryKey } = opts
+  const onBehalf = opts.actor !== undefined && opts.actor.id !== opener.id
 
   const business = opts.business ?? (await getBusinessByGuildId(guild.id))
   if (!business) return { ok: false, reason: NOT_CONFIGURED }
@@ -69,7 +75,8 @@ export async function openTicket(opts: {
   }
 
   // P2: per-category open-gate. Empty allow_role_ids = anyone may open.
-  if (!canOpenCategory(opener, business, cat)) {
+  // Skipped for on-behalf opens — the actor was already gated as admin.
+  if (!onBehalf && !canOpenCategory(opener, business, cat)) {
     return {
       ok: false,
       reason: `You don't have access to open a **${cat.label}** ticket. Ask an admin if you think you should.`,
@@ -116,7 +123,9 @@ export async function openTicket(opts: {
     if (ch) {
       return {
         ok: false,
-        reason: `You already have an open ticket in this category: <#${stillOpen.discordChannelId}>`,
+        reason: onBehalf
+          ? `${opener.displayName} already has an open **${cat.label}** ticket: <#${stillOpen.discordChannelId}>`
+          : `You already have an open ticket in this category: <#${stillOpen.discordChannelId}>`,
       }
     }
     // Channel was deleted out from under us — auto-close the row.
@@ -165,12 +174,13 @@ export async function openTicket(opts: {
     topic: `Ticket for ${opener.user.tag} · category: ${cat.label}`,
   })
 
-  const subject = truncate(`${categoryKey} from ${opener.user.username}`, 120)
+  const subject = truncate(opts.subjectOverride ?? `${categoryKey} from ${opener.user.username}`, 120)
   const [row] = await db
     .insert(tickets)
     .values({
       businessId: business.id,
       openerUserId,
+      openerDisplayName: opener.displayName,
       categoryId: cat.id,
       subject,
       status: 'open',
@@ -231,9 +241,11 @@ export async function openTicket(opts: {
   })
 
   // P13: notify staff who opted into new tickets in this team/category.
-  const openerUserIdForNotify = await getOrCreateUserByDiscordId(opener.id, {
-    name: opener.user.globalName ?? opener.user.username,
-    image: opener.user.displayAvatarURL(),
+  // On-behalf opens attribute the acting admin, not the target opener.
+  const actingMember = opts.actor ?? opener
+  const actorUserId = await getOrCreateUserByDiscordId(actingMember.id, {
+    name: actingMember.user.globalName ?? actingMember.user.username,
+    image: actingMember.user.displayAvatarURL(),
   })
   dispatchNotify({
     event: 'new_ticket',
@@ -242,7 +254,7 @@ export async function openTicket(opts: {
     ticketId: row.id,
     subject,
     slug: business.slug,
-    actorUserId: openerUserIdForNotify,
+    actorUserId,
   })
 
   // Lifecycle audit — pairs with the web's writeAudit calls so the merged
@@ -250,9 +262,18 @@ export async function openTicket(opts: {
   await writeAudit({
     businessId: business.id,
     ticketId: row.id,
-    actorUserId: openerUserId,
+    actorUserId,
     action: 'opened',
-    metadata: { via: 'bot', categoryId: cat.id, categoryLabel: cat.label },
+    metadata: onBehalf
+      ? {
+          via: 'bot',
+          categoryId: cat.id,
+          categoryLabel: cat.label,
+          onBehalfOfDiscordId: opener.id,
+          // Name snapshot so the audit line survives the target leaving the guild.
+          onBehalfOfName: opener.displayName,
+        }
+      : { via: 'bot', categoryId: cat.id, categoryLabel: cat.label },
   })
 
   return { ok: true, channel, ticket: row }

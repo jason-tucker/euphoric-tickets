@@ -1,13 +1,16 @@
 import http from 'node:http'
 import { timingSafeEqual } from 'node:crypto'
-import type { Client } from 'discord.js'
+import { ChannelType, PermissionFlagsBits, type Client, type TextChannel } from 'discord.js'
 import { eq } from 'drizzle-orm'
 import { db } from '../db/client'
-import { businesses } from '../db/schema'
+import { businesses, ticketPanels } from '../db/schema'
 import { env } from '../config/env'
 import { log } from '../services/logger'
 import { runTicketToolCommand, type TicketToolAction } from '../services/ticketToolControl'
 import { reconcileBusinessTicketTool, reprocessTicketToolEmbeds } from '../services/ticketToolIngest'
+import { getBusinessById, invalidateBusinessCache } from '../services/businessResolver'
+import { getPanelCategories, parsePanelSettings } from '../services/settingsService'
+import { buildPanelMessage } from '../services/ticketRenderer'
 
 // P13 (lantern) — tiny internal HTTP server. Exposes POST /api/internal/dm so
 // the web's notification dispatcher can send a Discord DM through the bot
@@ -57,6 +60,8 @@ export function startInternalHttp(client: Client): void {
     '/api/internal/tickettool/reprocess-embeds',
     '/api/internal/guild/leave',
     '/api/internal/bot/username',
+    '/api/internal/panel/post',
+    '/api/internal/panel/refresh',
   ])
 
   const server = http.createServer((req, res) => {
@@ -167,6 +172,104 @@ export function startInternalHttp(client: Client): void {
                 .writeHead(422, { 'Content-Type': 'application/json' })
                 .end(JSON.stringify({ ok: false, error: String(err).slice(0, 300) }))
             }
+            return
+          }
+
+          // POST /api/internal/panel/post — the web's settings page posts a
+          // ticket panel into a chosen channel through the bot's gateway
+          // connection (works for channels that are read-only to members).
+          // Body: { businessId, channelId }.
+          if (url === '/api/internal/panel/post') {
+            const { businessId, channelId } = JSON.parse(raw) as { businessId?: string; channelId?: string }
+            if (!businessId || !channelId) {
+              res.writeHead(400, { 'Content-Type': 'application/json' }).end('{"ok":false,"error":"businessId+channelId required"}')
+              return
+            }
+            if (!client.user) {
+              res.writeHead(503, { 'Content-Type': 'application/json' }).end('{"ok":false,"error":"bot not ready"}')
+              return
+            }
+            // Fresh read + cache invalidation — the web just wrote settings.
+            const biz = await getBusinessById(businessId)
+            if (!biz) {
+              res.writeHead(404, { 'Content-Type': 'application/json' }).end('{"ok":false,"error":"business not found"}')
+              return
+            }
+            if (biz.discordGuildId) invalidateBusinessCache(biz.discordGuildId)
+            const guild = biz.discordGuildId ? await client.guilds.fetch(biz.discordGuildId).catch(() => null) : null
+            if (!guild) {
+              res.writeHead(422, { 'Content-Type': 'application/json' }).end('{"ok":false,"error":"bot is not in that team\'s guild"}')
+              return
+            }
+            const channel = await guild.channels.fetch(channelId).catch(() => null)
+            if (!channel || channel.type !== ChannelType.GuildText) {
+              res.writeHead(422, { 'Content-Type': 'application/json' }).end('{"ok":false,"error":"channel not found or not a text channel"}')
+              return
+            }
+            const botMember = await guild.members.fetchMe()
+            const perms = (channel as TextChannel).permissionsFor(botMember)
+            if (!perms?.has(PermissionFlagsBits.ViewChannel) || !perms.has(PermissionFlagsBits.SendMessages)) {
+              res.writeHead(422, { 'Content-Type': 'application/json' }).end('{"ok":false,"error":"bot cannot view/send in that channel"}')
+              return
+            }
+            const categories = await getPanelCategories(guild.id, biz)
+            const payload = buildPanelMessage(categories, parsePanelSettings(biz.settings))
+            const sent = await (channel as TextChannel).send(payload as any)
+            await db.insert(ticketPanels).values({
+              businessId: biz.id,
+              guildId: guild.id,
+              channelId: channel.id,
+              messageId: sent.id,
+              postedByDiscordId: client.user.id,
+            })
+            log.info('panel posted via internal HTTP', { businessId: biz.id, channelId: channel.id })
+            res
+              .writeHead(200, { 'Content-Type': 'application/json' })
+              .end(JSON.stringify({ ok: true, channelId: channel.id, messageId: sent.id }))
+            return
+          }
+
+          // POST /api/internal/panel/refresh — re-render every posted panel for
+          // a team after its settings/categories changed on the web.
+          // Body: { businessId }.
+          if (url === '/api/internal/panel/refresh') {
+            const { businessId } = JSON.parse(raw) as { businessId?: string }
+            if (!businessId) {
+              res.writeHead(400, { 'Content-Type': 'application/json' }).end('{"ok":false,"error":"businessId required"}')
+              return
+            }
+            const biz = await getBusinessById(businessId)
+            if (!biz) {
+              res.writeHead(404, { 'Content-Type': 'application/json' }).end('{"ok":false,"error":"business not found"}')
+              return
+            }
+            if (biz.discordGuildId) invalidateBusinessCache(biz.discordGuildId)
+            const rows = await db.select().from(ticketPanels).where(eq(ticketPanels.businessId, biz.id))
+            const categories = biz.discordGuildId ? await getPanelCategories(biz.discordGuildId, biz) : []
+            const payload = buildPanelMessage(categories, parsePanelSettings(biz.settings))
+            // Parallel per row (guild fetch shared) — the web waits on this with
+            // a short timeout, so serial per-panel round-trips would spuriously
+            // report "bot unreachable" on teams with several panels.
+            const guilds = new Map<string, Promise<import('discord.js').Guild>>()
+            const results = await Promise.allSettled(
+              rows.map(async (row) => {
+                let guildP = guilds.get(row.guildId)
+                if (!guildP) {
+                  guildP = client.guilds.fetch(row.guildId)
+                  guilds.set(row.guildId, guildP)
+                }
+                const guild = await guildP
+                const channel = await guild.channels.fetch(row.channelId)
+                if (!channel || channel.type !== ChannelType.GuildText) throw new Error('channel gone')
+                const message = await (channel as TextChannel).messages.fetch(row.messageId)
+                await message.edit(payload as any)
+              }),
+            )
+            const refreshed = results.filter((r) => r.status === 'fulfilled').length
+            const failed = results.length - refreshed
+            res
+              .writeHead(200, { 'Content-Type': 'application/json' })
+              .end(JSON.stringify({ ok: true, refreshed, failed }))
             return
           }
 

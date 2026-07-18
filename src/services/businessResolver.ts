@@ -41,6 +41,13 @@ export async function getBusinessesByGuildId(guildId: string): Promise<Business[
     .orderBy(asc(businesses.createdAt))
 }
 
+// Uncached by-id lookup — used by the internal HTTP panel endpoints, where the
+// web has just written settings and a 60s-stale row would defeat the point.
+export async function getBusinessById(id: string): Promise<Business | null> {
+  const rows = await db.select().from(businesses).where(eq(businesses.id, id)).limit(1)
+  return rows[0] ?? null
+}
+
 export async function getBusinessBySlugInGuild(guildId: string, slug: string): Promise<Business | null> {
   const rows = await db
     .select()
