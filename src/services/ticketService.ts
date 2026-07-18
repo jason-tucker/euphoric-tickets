@@ -352,6 +352,11 @@ export async function changeTicketCategory(opts: {
   if (ticket.externalSource === 'tickettool') {
     return { ok: false, reason: "euphoric doesn't move TicketTool channels." }
   }
+  // Closed covers detached tickets too — a stale welcome-card Category button
+  // must not move (or re-ACL) a channel the ticket no longer owns.
+  if (ticket.status === 'closed') {
+    return { ok: false, reason: 'This ticket is already closed.' }
+  }
   if (ticket.categoryId === newCategory.id) {
     return { ok: false, reason: `This ticket is already in **${newCategory.label}**.` }
   }

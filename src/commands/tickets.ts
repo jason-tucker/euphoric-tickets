@@ -1014,11 +1014,16 @@ async function detachHere(interaction: ChatInputCommandInteraction): Promise<voi
 
   // Best-effort remove the welcome card — its Claim/Close/Category buttons
   // carry the ticket id and would keep acting on the row from a foreign
-  // channel. Skip silently when not found (e.g. convert-created tickets).
+  // channel (each fails on the closed status, but dead buttons are clutter).
+  // The card is normally the first message; also scan the newest 50 in case
+  // it was re-posted later. Skip silently when not found (e.g. converts).
   try {
-    const oldest = await channel.messages.fetch({ after: '0', limit: 25 })
+    const [oldest, newest] = await Promise.all([
+      channel.messages.fetch({ after: '0', limit: 25 }),
+      channel.messages.fetch({ limit: 50 }),
+    ])
     const needle = new RegExp(`"tk:(claim|close|changecat):${ctx.ticket.id}"`)
-    const card = oldest.find(
+    const card = [...oldest.values(), ...newest.values()].find(
       (m) => m.author.id === interaction.client.user.id && needle.test(JSON.stringify(m.components)),
     )
     if (card) await card.delete()
