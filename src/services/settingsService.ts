@@ -9,6 +9,9 @@ export type PanelCategory = {
   label: string
   emoji?: string
   description?: string
+  // ticket_categories.ping_staff_on_open. Shown in the settings-modal JSON;
+  // omitted on submit = keep the category's current value (default true).
+  pingStaffOnOpen?: boolean
 }
 
 const SNOWFLAKE_RE = /^\d{17,20}$/
@@ -62,6 +65,7 @@ export async function getPanelCategories(
       description: ticketCategories.description,
       staffOnly: ticketCategories.staffOnly,
       integrationOnly: ticketCategories.integrationOnly,
+      pingStaffOnOpen: ticketCategories.pingStaffOnOpen,
     })
     .from(ticketCategories)
     .where(eq(ticketCategories.businessId, biz.id))
@@ -80,7 +84,23 @@ export async function getPanelCategories(
       label: r.label,
       emoji: r.emoji ?? undefined,
       description: r.description ?? undefined,
+      pingStaffOnOpen: r.pingStaffOnOpen,
     }))
+}
+
+// Discord caps a TextInput value at 4000 chars. The settings modal pre-fills
+// the panel-category JSON; if it would overflow, drop `pingStaffOnOpen` where
+// it equals the default (true). Safe because an omitted value keeps the
+// category's current value on submit.
+export const PANEL_JSON_MAX = 4000
+export function panelCategoriesModalJson(cats: PanelCategory[]): string {
+  const full = JSON.stringify(cats, null, 2)
+  if (full.length <= PANEL_JSON_MAX) return full
+  return JSON.stringify(
+    cats.map(({ pingStaffOnOpen, ...rest }) => (pingStaffOnOpen === false ? { ...rest, pingStaffOnOpen } : rest)),
+    null,
+    2,
+  )
 }
 
 // Settings writes — used by /tickets settings modal. The category list
@@ -138,6 +158,9 @@ export function integrationOnlyConflictMessage(keys: string[]): string {
 // treated as the source of truth on submit. integration_only categories are
 // NOT part of that JSON (getPanelCategories hides them): they are preserved
 // untouched, and a submitted key that collides with one is refused.
+// ping_staff_on_open: an explicit JSON value wins; when the JSON omits it, a
+// re-submitted key keeps its previous value (so older modals / hand-trimmed
+// JSON never silently re-enable staff pings); a new key gets the default true.
 export async function replaceTicketCategories(
   guildId: string,
   cats: PanelCategory[],
@@ -153,6 +176,11 @@ export async function replaceTicketCategories(
   const conflicts = await db.transaction(async (tx) => {
     const clash = await findIntegrationOnlyKeyConflicts(biz.id, cats, tx)
     if (clash.length > 0) return clash
+    const prior = await tx
+      .select({ key: ticketCategories.key, pingStaffOnOpen: ticketCategories.pingStaffOnOpen })
+      .from(ticketCategories)
+      .where(and(eq(ticketCategories.businessId, biz.id), eq(ticketCategories.integrationOnly, false)))
+    const priorPing = new Map(prior.map((r) => [r.key, r.pingStaffOnOpen]))
     await tx
       .delete(ticketCategories)
       .where(and(eq(ticketCategories.businessId, biz.id), eq(ticketCategories.integrationOnly, false)))
@@ -165,6 +193,7 @@ export async function replaceTicketCategories(
         emoji: c.emoji ?? null,
         description: c.description ?? null,
         sortOrder: String(i),
+        pingStaffOnOpen: c.pingStaffOnOpen ?? priorPing.get(c.key) ?? true,
       })),
     )
     return []
@@ -226,11 +255,15 @@ export function validatePanelCategoriesJson(
     if (typeof obj.key !== 'string' || !obj.key) return { ok: false, error: `Item ${idx}: "key" is required (string)` }
     if (!/^[a-z0-9_-]{1,32}$/i.test(obj.key)) return { ok: false, error: `Item ${idx}: "key" must match [a-z0-9_-]{1,32}` }
     if (typeof obj.label !== 'string' || !obj.label) return { ok: false, error: `Item ${idx}: "label" is required (string)` }
+    if (obj.pingStaffOnOpen !== undefined && typeof obj.pingStaffOnOpen !== 'boolean') {
+      return { ok: false, error: `Item ${idx}: "pingStaffOnOpen" must be true or false` }
+    }
     out.push({
       key: obj.key,
       label: obj.label,
       emoji: typeof obj.emoji === 'string' ? obj.emoji : undefined,
       description: typeof obj.description === 'string' ? obj.description : undefined,
+      ...(typeof obj.pingStaffOnOpen === 'boolean' ? { pingStaffOnOpen: obj.pingStaffOnOpen } : {}),
     })
   }
   return { ok: true, value: out }

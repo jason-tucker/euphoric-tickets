@@ -56,6 +56,13 @@ export const ticketCategories = pgTable(
     // a button for it. Mirrors euphoric-tickets-web.
     integrationOnly: boolean('integration_only').notNull().default(false),
 
+    // v0.8.3: when false, the bot's ticket-open message pings ONLY the opener —
+    // the category's staff roles still get channel access, they just aren't
+    // @-mentioned (e.g. high-volume integration categories like newsong).
+    // Default true keeps the historical "ping every staff role" behaviour.
+    // Mirrors euphoric-tickets-web.
+    pingStaffOnOpen: boolean('ping_staff_on_open').notNull().default(true),
+
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({ businessKey: uniqueIndex('ticket_categories_business_key_uq').on(t.businessId, t.key) }),

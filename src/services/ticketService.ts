@@ -321,12 +321,16 @@ export async function openTicket(opts: {
       card: c,
     })
 
-  const pingContent = staffRoleIds.length
-    ? `<@${opener.id}> ${staffRoleIds.map((id) => `<@&${id}>`).join(' ')}`
+  // Per-category ping_staff_on_open: when off, only the opener is pinged —
+  // staff keep channel access (overwrites above) and the welcome card still
+  // lists their roles, without a mention.
+  const pingRoleIds = cat.pingStaffOnOpen ? staffRoleIds : []
+  const pingContent = pingRoleIds.length
+    ? `<@${opener.id}> ${pingRoleIds.map((id) => `<@&${id}>`).join(' ')}`
     : `<@${opener.id}>`
   await channel.send({
     content: pingContent,
-    allowedMentions: { users: [opener.id], roles: staffRoleIds },
+    allowedMentions: { users: [opener.id], roles: pingRoleIds },
   })
   // parse:[] so the card body's {{user}} mention renders without re-pinging.
   const sendWelcome = (c: IntegrationCard | null) =>
