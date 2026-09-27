@@ -88,29 +88,43 @@ export function buildTicketWelcome(opts: {
   const emoji = categoryEmoji ? `${categoryEmoji} ` : '🎫 '
 
   // Compact header — small subtext so the body dominates.
-  const header = [
+  const headerBase = [
     `-# ${emoji}**Ticket #${ticketId}** · ${categoryLabel}`,
-    `-# Opened by <@${openerId}> · <t:${openedTs}:R>${claimerId ? ` · claimed by <@${claimerId}>` : ''}`,
+    `-# Opened by <@${openerId}> · <t:${openedTs}:R>`,
   ].join('\n')
+  const header = claimerId ? `${headerBase} · claimed by <@${claimerId}>` : headerBase
+
+  // Components V2 caps the TOTAL text across all Text Displays at 4000 chars.
+  // Budget the body (template and/or card) against what the header leaves,
+  // reserving room for the claimer suffix so the Claim re-render — which adds
+  // it — truncates identically and still fits.
+  let budget = TOTAL_TEXT_MAX - headerBase.length - CLAIM_SUFFIX_RESERVE
 
   const cardBody = card ? renderCardBody(card) : null
   const hasTemplate = Boolean(firstMessage && firstMessage.trim().length > 0)
 
   // Dominant body — custom template, else the integration card, else subject
   // heading + default prompt.
-  const body = hasTemplate
-    ? firstMessage!.trim()
-    : cardBody ??
-      `${subject ? `### ${subject}\n` : ''}Describe your issue in this channel — staff will be with you shortly.`
+  const body = clip(
+    hasTemplate
+      ? firstMessage!.trim()
+      : cardBody ??
+          `${subject ? `### ${subject}\n` : ''}Describe your issue in this channel — staff will be with you shortly.`,
+    budget,
+  )
+  budget -= body.length
 
   const container = new ContainerBuilder()
     .setAccentColor(ACCENT)
     .addTextDisplayComponents(new TextDisplayBuilder().setContent(header))
     .addSeparatorComponents(sep())
     .addTextDisplayComponents(new TextDisplayBuilder().setContent(body))
-  // A category template AND a card: the template leads, the card follows.
-  if (hasTemplate && cardBody) {
-    container.addSeparatorComponents(sep()).addTextDisplayComponents(new TextDisplayBuilder().setContent(cardBody))
+  // A category template AND a card: the template leads, the card follows in
+  // whatever budget the template left.
+  if (hasTemplate && cardBody && budget >= 2) {
+    container
+      .addSeparatorComponents(sep())
+      .addTextDisplayComponents(new TextDisplayBuilder().setContent(clip(cardBody, budget)))
   }
 
   const claimBtn = new ButtonBuilder()
@@ -159,13 +173,24 @@ export function buildTicketWelcome(opts: {
   }
 }
 
-// Text Display content caps at 4000 chars; a max-size card (title 100 + 25
-// lines × 200) can exceed that, so clamp.
-const CARD_BODY_MAX = 3900
+// Discord: at most 4000 chars of text across all Text Displays of one
+// Components V2 message. The claimer suffix (` · claimed by <@snowflake>`,
+// ≤ 37 chars) is reserved up front.
+export const TOTAL_TEXT_MAX = 4000
+const CLAIM_SUFFIX_RESERVE = 64
 
+// Truncate to at most n chars, ending in an ellipsis when cut.
+function clip(s: string, n: number): string {
+  return s.length > n ? s.slice(0, Math.max(0, n - 1)) + '…' : s
+}
+
+// card.title / card.lines are rendered as-is. They arrive ALREADY
+// markdown-escaped: the web escapes subject, card.title, card.lines and the
+// close reason at its /api/v1 boundary (euphoric-tickets-web
+// src/server/integrations/api.ts, escapeDiscordMarkdown) before calling the
+// bot. The bot must not escape them again (that would show the backslashes).
 function renderCardBody(card: IntegrationCard): string {
-  const text = [`### ${card.title}`, ...(card.lines ?? [])].join('\n')
-  return text.length > CARD_BODY_MAX ? text.slice(0, CARD_BODY_MAX - 1) + '…' : text
+  return [`### ${card.title}`, ...(card.lines ?? [])].join('\n')
 }
 
 // Discord's maximum link-button URL length.
