@@ -136,9 +136,13 @@ export async function resolveTicketAccess(
 
 // Convenience for places that have only a discord channel id and need the
 // ticket row alongside its access decision.
+//
+// `business` may be null: the ticket's own team (ticket.businessId) is then
+// the only source — the welcome-card buttons use this so they never depend on
+// the guild's default team.
 export async function resolveTicketAccessByChannel(
   member: GuildMember,
-  business: Business,
+  business: Business | null,
   channelId: string,
 ): Promise<{ ticket: Ticket; access: TicketAccess; business: Business } | null> {
   const [t] = await db.select().from(tickets).where(eq(tickets.discordChannelId, channelId)).limit(1)
@@ -147,10 +151,11 @@ export async function resolveTicketAccessByChannel(
   // than the guild's default. Resolve access (staff/admin roles, category) and
   // attribute the ticket against its OWN business.
   let biz = business
-  if (t.businessId !== business.id) {
+  if (!biz || t.businessId !== biz.id) {
     const [owner] = await db.select().from(businesses).where(eq(businesses.id, t.businessId)).limit(1)
     if (owner) biz = owner
   }
+  if (!biz) return null
   const access = await resolveTicketAccess(member, biz, t)
   return { ticket: t, access, business: biz }
 }
