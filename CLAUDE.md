@@ -211,6 +211,7 @@ lives in `businesses` columns + `ticket_categories` rows (see above).
 | `user_notification_prefs` | Per-user notification preferences (web) |
 | `audit_logs` | Per-ticket lifecycle audit rows (open/claim/close/channel_deleted/…) |
 | `bot_errors` | Persistent error log written by the bot |
+| `integration_open_claims` | Integration API open idempotency — one row per `(integration_id, external_ref)`, state `opening`/`open`/`failed`, with the channel written before the ticket insert so a crashed open's orphan channel can be cleaned up |
 | `app_settings` | Bot-owner global key/value settings (e.g. `bot_name`) — written from the web's Sudo dashboard; the bot reads/applies select keys |
 
 ---
@@ -253,7 +254,8 @@ Derived from `src/config/env.ts` (Zod-validated at startup) plus `LEADER_ELECTIO
 | `SUDO_ROLE_IDS` | No | Comma-separated role snowflakes treated as bot owners everywhere. |
 | `SUDO_USER_IDS` | No | Comma-separated user snowflakes treated as bot owners everywhere. |
 | `BOT_OWNER_ID` | No | User snowflake that receives a startup "bot is up" DM. |
-| `WEB_BASE_URL` | No | Public URL of the web companion — used in every close-DM link and the notify bridge. Default `https://tickets.euphoric.fm`. |
+| `WEB_BASE_URL` | No | Public URL of the web companion — used in every link shown to people (close DMs, welcome cards) and as the notify-bridge fallback. Default `https://tickets.euphoric.fm`. |
+| `WEB_INTERNAL_URL` | No | Private-network URL of the web (e.g. `http://tickets-web:3000`) for bot → web server-to-server calls (the notify bridge). Unset = `WEB_BASE_URL`. |
 | `INTERNAL_TOKEN` | No | Shared secret (min 8 chars) authenticating the web ↔ bot internal HTTP endpoints (`POST /api/internal/dm` and related routes). **When unset the bot falls back to `DISCORD_BOT_TOKEN` as the secret and logs a loud startup warning** — set a dedicated value here and the identical value in the web app to avoid reusing the bot token as an HTTP auth header. |
 | `INTERNAL_PORT` | No | Port the bot's internal HTTP server binds. Keep on the private Docker network — never publish it to the host. Default `8787`. |
 | `LEADER_ELECTION` | No | Set to `off` to skip the Postgres advisory-lock leader-election wait on single-VPS deploys (read via `process.env`, not the Zod schema). |
@@ -275,7 +277,10 @@ pnpm commands:deploy   # register slash commands in GUILD_ID (run once, or after
 pnpm typecheck
 ```
 
-There is no automated test suite.
+Tests: `pnpm test:docker` (typecheck + build + vitest in `node:24-alpine` against a
+throwaway `postgres:16-alpine` on a private Docker network; mocked discord.js
+objects in `test/fakes.ts`). `pnpm test` alone requires `TEST_DATABASE_URL` to
+point at a throwaway database — never the shared one.
 
 ---
 
@@ -291,7 +296,12 @@ Current endpoints:
 - `POST /api/internal/tickettool/reprocess-embeds` — re-pull embed text for already-ingested tickets.
 - `POST /api/internal/guild/leave` — make the bot leave a guild (team DB rows are left intact).
 - `POST /api/internal/bot/username` — set the bot's global Discord username.
+- `POST /api/internal/tickets/open` — **Integration API**: open a ticket for `openerDiscordId` on behalf of an integration (`src/services/integrationTickets.ts`). Business by id, idempotent on `(integrationId, externalRef)` via `integration_open_claims`; `201/200 {ticketId, channelId, created}` · `404 opener_not_member` · `403 opener_pending|category_forbidden` · `409 opening_in_progress` · `503 guild_unavailable`.
+- `POST /api/internal/tickets/close` — **Integration API**: close a ticket (`{ticketId, businessId, actorDiscordId?, reason?}`); the closer is the actor if staff for the category, else the bot. `200 {closed:true}` · `409 already_closed` · `404`.
+- `POST /api/internal/tickets/webhook/ensure` — **Integration API**: create/persist the ticket channel's webhook (`200 {webhookUrl}`).
 
-The reverse direction — bot → web — is handled by `src/services/notifyBridge.ts`: `dispatchNotify()` POSTs to the web's `/api/internal/notify` after Discord-origin ticket events (new ticket, new message relay) so the web can fan out browser and push notifications.
+`integration_only` categories (`ticket_categories.integration_only`) can only be opened through the Integration API: `openTicket` refuses them for any other source (panel buttons, including stale panels), panels never render them, and `/tickets convert` refuses them.
+
+The reverse direction — bot → web — is handled by `src/services/notifyBridge.ts`: `dispatchNotify()` POSTs to the web's `/api/internal/notify` (on `WEB_INTERNAL_URL`, falling back to `WEB_BASE_URL`) after Discord-origin ticket events (new ticket, new message relay) so the web can fan out browser and push notifications.
 
 **Schema ownership reminder.** The web companion (`euphoric-tickets-web`) runs `drizzle-kit push` on its own container start and is the **single owner of the schema**. This bot mirrors `src/db/schema/*.ts` from the web repo and must never push — its `docker-entrypoint.sh` only runs `exec node dist/index.js`. The `db:generate` and `db:push` scripts in `package.json` are for local/dev use only. Cross-reference: [`euphoric-tickets-web`](https://github.com/jason-tucker/euphoric-tickets-web).

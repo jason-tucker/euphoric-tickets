@@ -44,7 +44,8 @@ export function startInternalHttp(client: Client): void {
 
   // F1 (security review): when INTERNAL_TOKEN is unset the Discord bot token —
   // the single most sensitive credential — doubles as the internal HTTP shared
-  // secret and is sent on the wire to WEB_BASE_URL by notifyBridge. That works
+  // secret and is sent on the wire to the web (WEB_INTERNAL_URL, else
+  // WEB_BASE_URL) by notifyBridge. That works
   // out of the box but reuses the bot token as an auth secret. Warn loudly so
   // operators set a dedicated INTERNAL_TOKEN (the same value on the web side).
   if (!env.INTERNAL_TOKEN) {
