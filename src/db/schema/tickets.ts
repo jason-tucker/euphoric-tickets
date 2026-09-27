@@ -1,5 +1,6 @@
 import { boolean, index, integer, jsonb, pgTable, serial, text, timestamp, uniqueIndex, uuid } from 'drizzle-orm/pg-core'
 import { businesses } from './businesses'
+import { integrations } from './integrations'
 import { ticketCategories } from './ticketCategories'
 import { users } from './users'
 
@@ -72,7 +73,7 @@ export const tickets = pgTable(
     // integration's own reference (e.g. a portal batch id) is unique per
     // integration; NULLs are distinct, so ordinary tickets never collide.
     // external_source stays 'euphoric' for these. Mirrors euphoric-tickets-web.
-    integrationId: uuid('integration_id'),
+    integrationId: uuid('integration_id').references(() => integrations.id),
     externalRef: text('external_ref'),
     integrationCard: jsonb('integration_card').$type<IntegrationCard>(),
 

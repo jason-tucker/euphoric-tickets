@@ -50,7 +50,7 @@ Configuration lives in database rows, not a settings table:
 - **`businesses`** — one row per team. Columns include `admin_role_ids` (CSV), `discord_fallback_category_id`, `discord_closed_category_id`, `delete_closed_after_days`, `ticket_mode` (`euphoric`/`tickettool`), `ticket_tool_category_ids`, and a free-form `settings` JSONB.
 - **`ticket_categories`** — one row per panel option, scoped to a team by `(business_id, key)`. Columns include `label`, `emoji`, `description`, `sort_order`, `discord_parent_category_id`, `allow_role_ids` (who may open), `staff_role_ids` (who is staff for it), `first_message_template`, `staff_only`, `integration_only`, and `kind` (`normal`/`project`).
 
-Full table list: `businesses`, `ticket_categories`, `tickets`, `ticket_messages`, `ticket_panels`, `users`, `business_members`, `audit_logs`, `bot_errors`, `user_notification_prefs`, `ticket_external_members`, `integration_open_claims` (Integration API open idempotency), `app_settings` (bot-owner global key/value settings, e.g. `bot_name`, written from the web's Sudo dashboard). (There is **no** `ticket_settings` table.)
+Full table list: `businesses`, `ticket_categories`, `tickets`, `ticket_messages`, `ticket_panels`, `users`, `business_members`, `audit_logs`, `bot_errors`, `user_notification_prefs`, `ticket_external_members`, `integrations` (read-only mirror; the web manages them), `integration_open_claims` (Integration API open idempotency), `app_settings` (bot-owner global key/value settings, e.g. `bot_name`, written from the web's Sudo dashboard). (There is **no** `ticket_settings` table.)
 
 ## Stack
 

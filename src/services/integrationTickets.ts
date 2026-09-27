@@ -14,6 +14,7 @@ import { businesses, type Business } from '../db/schema/businesses'
 import { ticketCategories } from '../db/schema/ticketCategories'
 import { tickets, type IntegrationCard, type Ticket } from '../db/schema/tickets'
 import { integrationOpenClaims } from '../db/schema/integrationOpenClaims'
+import { integrations } from '../db/schema/integrations'
 import { closeTicket, ensureTicketWebhook, openTicket, type IntegrationIdentity } from './ticketService'
 import { isStaffForCategory } from './permissions'
 import { getOrCreateUserByDiscordId } from './userResolver'
@@ -303,17 +304,16 @@ export async function handleIntegrationOpen(client: Client, raw: unknown): Promi
 
 // ───────────────────────────── close ─────────────────────────────
 
-// The integration's slug for audit attribution. The close route's contract
-// carries no slug, and the bot doesn't mirror the web-owned `integrations`
-// table, so read just that column. Best-effort.
+// The integration's slug for audit attribution — the close route's contract
+// carries no slug, so read it from the (web-owned) integrations row.
 async function integrationSlugFor(integrationId: string | null): Promise<string | null> {
   if (!integrationId) return null
-  try {
-    const rows = await db.execute<{ slug: string }>(sql`select slug from integrations where id = ${integrationId} limit 1`)
-    return (rows as unknown as { slug: string }[])[0]?.slug ?? null
-  } catch {
-    return null
-  }
+  const [row] = await db
+    .select({ slug: integrations.slug })
+    .from(integrations)
+    .where(eq(integrations.id, integrationId))
+    .limit(1)
+  return row?.slug ?? null
 }
 
 export async function handleIntegrationClose(client: Client, raw: unknown): Promise<RouteResult> {

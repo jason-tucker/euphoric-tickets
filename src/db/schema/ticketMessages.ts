@@ -41,7 +41,7 @@ export const ticketMessages = pgTable(
     attachments: jsonb('attachments').$type<MessageAttachment[]>().notNull().default([]),
 
     // Integration API (v0.8.0). Mirrors euphoric-tickets-web.
-    metadata: jsonb('metadata').$type<Record<string, unknown>>(),
+    metadata: jsonb('metadata').$type<Record<string, unknown>>().notNull().default({}),
     authorKind: text('author_kind', { enum: messageAuthorKinds }).notNull().default('human'),
     idempotencyKey: text('idempotency_key'),
 
@@ -54,7 +54,7 @@ export const ticketMessages = pgTable(
     byDiscordMessage: index('ticket_messages_discord_message_idx').on(t.discordMessageId),
     // Integration message idempotency (NULL keys are distinct, so relay rows
     // without a key never collide).
-    byIdempotencyKey: uniqueIndex('ticket_messages_idempotency_uq').on(t.ticketId, t.idempotencyKey),
+    byIdempotencyKey: uniqueIndex('ticket_messages_ticket_idempotency_uq').on(t.ticketId, t.idempotencyKey),
   }),
 )
 

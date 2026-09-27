@@ -1,4 +1,6 @@
 import { integer, pgTable, primaryKey, text, timestamp, uuid } from 'drizzle-orm/pg-core'
+import { integrations } from './integrations'
+import { tickets } from './tickets'
 
 // Mirrored from euphoric-tickets-web (Integration API, v0.8.0). One row per
 // (integration, external_ref) — the idempotency claim the bot's
@@ -16,11 +18,13 @@ export type IntegrationOpenClaimState = (typeof integrationOpenClaimStates)[numb
 export const integrationOpenClaims = pgTable(
   'integration_open_claims',
   {
-    integrationId: uuid('integration_id').notNull(),
+    integrationId: uuid('integration_id')
+      .notNull()
+      .references(() => integrations.id, { onDelete: 'cascade' }),
     externalRef: text('external_ref').notNull(),
-    state: text('state', { enum: integrationOpenClaimStates }).notNull().default('opening'),
+    state: text('state', { enum: integrationOpenClaimStates }).notNull(),
     channelId: text('channel_id'),
-    ticketId: integer('ticket_id'),
+    ticketId: integer('ticket_id').references(() => tickets.id, { onDelete: 'set null' }),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({ pk: primaryKey({ columns: [t.integrationId, t.externalRef] }) }),

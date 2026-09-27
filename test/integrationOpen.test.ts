@@ -21,7 +21,7 @@ afterEach(() => {
 async function setup(category: Parameters<typeof seedTeam>[0]['category'] = {}) {
   const team = await seedTeam({ category: { staffRoleIds: STAFF_ROLE, integrationOnly: true, ...category } })
   const opener = team.guild.addMember({ username: 'songwriter' })
-  const integration = await seedIntegration('efm-music')
+  const integration = await seedIntegration(team.business.id)
   const client = fakeClient(team.guild)
   return { ...team, opener, integration, client }
 }
@@ -77,7 +77,7 @@ describe('POST /api/internal/tickets/open — happy path', () => {
     const audits = await db.select().from(auditLogs).where(eq(auditLogs.ticketId, t.id))
     expect(audits).toHaveLength(1)
     expect(audits[0].action).toBe('opened')
-    expect(audits[0].metadata).toMatchObject({ via: 'integration:efm-music', externalRef: body.externalRef })
+    expect(audits[0].metadata).toMatchObject({ via: `integration:${s.integration.slug}`, externalRef: body.externalRef })
 
     // new_ticket notify went to the private-network web URL.
     await vi.waitFor(() => expect(fetchStub.calls).toHaveLength(1))
@@ -306,7 +306,7 @@ describe('open — opener and category errors', () => {
     const first = await seedTeam({ category: { key: 'support' } })
     const second = await seedTeam({ guild: first.guild, category: { key: 'newsong', integrationOnly: true } })
     const opener = first.guild.addMember()
-    const integration = await seedIntegration()
+    const integration = await seedIntegration(second.business.id)
     const res = await handleIntegrationOpen(
       fakeClient(first.guild),
       openBody({ integration, business: second.business, category: second.category, openerDiscordId: opener.id }),

@@ -31,7 +31,7 @@ async function openIntegrationTicket() {
   const opener = guild.addMember({ username: 'songwriter' })
   const manager = guild.addMember({ username: 'manager', roles: [MANAGER_ROLE] })
   const outsider = guild.addMember({ username: 'outsider' })
-  const integration = await seedIntegration('efm-music')
+  const integration = await seedIntegration(second.business.id)
   const client = fakeClient(guild)
   const body = openBody({ integration, business: second.business, category: second.category, openerDiscordId: opener.id })
   const res = await handleIntegrationOpen(client, body)
@@ -132,7 +132,7 @@ describe('POST /api/internal/tickets/close', () => {
 
     const audits = await db.select().from(auditLogs).where(eq(auditLogs.ticketId, s.ticketId))
     const closed = audits.find((a) => a.action === 'closed')!
-    expect(closed.metadata).toMatchObject({ via: 'integration:efm-music' })
+    expect(closed.metadata).toMatchObject({ via: `integration:${s.integration.slug}` })
   })
 
   it('a staff actor is the closer; the reason reaches the DM and audit', async () => {
@@ -149,7 +149,7 @@ describe('POST /api/internal/tickets/close', () => {
     expect(s.opener.sentDMs[0].content).toContain('closed by manager')
     expect(s.opener.sentDMs[0].content).toContain('Reason: All songs reviewed')
     const [closed] = (await db.select().from(auditLogs).where(eq(auditLogs.ticketId, s.ticketId))).filter((a) => a.action === 'closed')
-    expect(closed.metadata).toMatchObject({ via: 'integration:efm-music', reason: 'All songs reviewed' })
+    expect(closed.metadata).toMatchObject({ via: `integration:${s.integration.slug}`, reason: 'All songs reviewed' })
   })
 
   it('a non-staff actor falls back to the bot as closer', async () => {

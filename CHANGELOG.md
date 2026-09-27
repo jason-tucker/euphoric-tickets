@@ -19,10 +19,12 @@
 - **Claim/Close button parity.** The welcome-card **Claim** and **Close** buttons gated on the guild default team's `admin_role_ids` and re-rendered the card from guild-level lookups. They now resolve the ticket by channel and its team from `ticket.businessId`, gate with the per-category staff rule (`resolveTicketAccessByChannel` accepts a null business for this), and the Claim re-render uses `staffRoleIdsForCategory`, the ticket's own team slug for the web link, and the persisted `integration_card`. A category-only staff member (such as EFM Managers) can now claim, and the card and its links survive a Claim.
 
 ### Schema (mirror — the web owns and pushes it)
-- `tickets`: `integration_id` uuid, `external_ref` text, `integration_card` jsonb, and `uniqueIndex(integration_id, external_ref)`.
-- `ticket_messages`: `metadata` jsonb, `author_kind` text NOT NULL DEFAULT `'human'`, `idempotency_key` text, and `uniqueIndex(ticket_id, idempotency_key)`.
+- `tickets`: `integration_id` uuid (FK → `integrations.id`), `external_ref` text, `integration_card` jsonb, and `tickets_integration_external_ref_uq` UNIQUE (`integration_id`, `external_ref`).
+- `ticket_messages`: `metadata` jsonb NOT NULL DEFAULT `'{}'`, `author_kind` text NOT NULL DEFAULT `'human'`, `idempotency_key` text, and `ticket_messages_ticket_idempotency_uq` UNIQUE (`ticket_id`, `idempotency_key`).
 - `ticket_categories`: `integration_only` boolean NOT NULL DEFAULT false.
-- New table `integration_open_claims` (PK `integration_id, external_ref`; `state` ∈ `opening|open|failed`, `channel_id`, `ticket_id`, `updated_at`).
+- New table `integration_open_claims` (PK `integration_id, external_ref`; `integration_id` FK → `integrations` ON DELETE CASCADE; `state` ∈ `opening|open|failed`, `channel_id`, `ticket_id` FK → `tickets` ON DELETE SET NULL, `updated_at`).
+- `integrations` mirrored (read-only for the bot — it reads `slug` for close-audit attribution). The other web-owned Integration API tables (`integration_webhook_allowlist`, `integration_deliveries`, `integration_ticket_state`, `integration_audit`) are not used by the bot and are not mirrored.
+- Checked against the web's `docs/INTEGRATION_SCHEMA.md` (web v0.12.0): names, types, nullability, defaults, index names and FKs match for every mirrored table. Pushing this mirror twice into an empty database gives an empty second diff.
 
 ### Deploy notes
 - **Web first.** The bot selects every declared column (`db.select().from(tickets)`), so the web must push this schema before this image runs. Check the live columns between the two deploys.

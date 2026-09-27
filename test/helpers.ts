@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { vi } from 'vitest'
 import { and, eq, sql } from 'drizzle-orm'
 import { db } from '../src/db/client'
-import { integrationOpenClaims, tickets } from '../src/db/schema'
+import { integrationOpenClaims, integrations, tickets } from '../src/db/schema'
 import type { Business, TicketCategory } from '../src/db/schema'
 
 // Captures notify-bridge POSTs; passes loopback requests (the internal HTTP
@@ -19,10 +19,21 @@ export function stubFetch() {
   return { calls, spy }
 }
 
-export async function seedIntegration(slug = `int-${randomUUID().slice(0, 6)}`) {
-  const id = randomUUID()
-  await db.execute(sql`insert into integrations (id, slug, name) values (${id}, ${slug}, ${'EFM Music'})`)
-  return { id, slug, name: 'EFM Music' }
+export async function seedIntegration(businessId: string) {
+  const slug = `efm-music-${randomUUID().slice(0, 8)}`
+  const [row] = await db
+    .insert(integrations)
+    .values({
+      businessId,
+      name: 'EFM Music',
+      slug,
+      keyPrefix: randomUUID().replace(/-/g, '').slice(0, 10),
+      keyHash: 'test-hash-not-a-secret',
+      scopes: ['tickets:read', 'tickets:write', 'tickets:close'],
+      allowedCategoryKeys: ['newsong'],
+    })
+    .returning()
+  return { id: row.id, slug: row.slug, name: row.name }
 }
 
 export function openBody(opts: {
