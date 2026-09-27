@@ -246,6 +246,12 @@ export async function handleIntegrationOpen(client: Client, raw: unknown): Promi
   if (claim.kind === 'busy') return err(409, 'opening_in_progress')
   if (claim.kind === 'adopt') {
     await setClaim(req.integrationId, req.externalRef, { state: 'open', ticketId: claim.ticket.id })
+    // scheduledCleanup / startupResync null discord_channel_id once a channel
+    // is gone. There is no channel to report (the web requires a snowflake),
+    // so say so explicitly instead of 200 {channelId:null}.
+    if (!claim.ticket.discordChannelId) {
+      return { status: 409, body: { error: 'ticket_channel_missing', ticketId: claim.ticket.id } }
+    }
     await ensureWebhookQuietly(client, business, claim.ticket)
     return { status: 200, body: { ticketId: claim.ticket.id, channelId: claim.ticket.discordChannelId, created: false } }
   }

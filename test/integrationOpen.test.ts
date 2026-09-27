@@ -145,6 +145,19 @@ describe('open — claim rules', () => {
     expect((await getClaim(s.integration.id, body.externalRef)).state).toBe('open')
   })
 
+  it('adopting a ticket whose channel was nulled (cleanup/resync) → 409 ticket_channel_missing', async () => {
+    const s = await setup()
+    const body = openBody({ integration: s.integration, business: s.business, category: s.category, openerDiscordId: s.opener.id })
+    const first = await handleIntegrationOpen(s.client, body)
+    await db.update(tickets).set({ discordChannelId: null }).where(eq(tickets.id, first.body.ticketId as number))
+    expect(await handleIntegrationOpen(s.client, body)).toEqual({
+      status: 409,
+      body: { error: 'ticket_channel_missing', ticketId: first.body.ticketId },
+    })
+    expect(s.guild.liveTextChannels()).toHaveLength(1) // nothing new created
+    expect(await ticketsForRef(s.integration.id, body.externalRef)).toHaveLength(1)
+  })
+
   it('returns 409 opening_in_progress while a fresh claim is opening', async () => {
     const s = await setup()
     const body = openBody({ integration: s.integration, business: s.business, category: s.category, openerDiscordId: s.opener.id })
