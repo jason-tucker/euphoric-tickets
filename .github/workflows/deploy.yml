@@ -58,6 +58,9 @@ jobs:
 
       # Deploy slash commands against Discord. EUPHORIC API not used here;
       # GUILD_ID and Discord credentials must be set as repo secrets.
+      # registerCommands imports the validated env, so DATABASE_URL and
+      # INTERNAL_TOKEN (required, >= 32 chars since v0.8.2) get placeholders:
+      # this one-shot container never connects to the DB or serves HTTP.
       - name: Deploy slash commands
         continue-on-error: true
         run: |
@@ -66,6 +69,7 @@ jobs:
             -e DISCORD_CLIENT_ID="${{ secrets.DISCORD_CLIENT_ID }}" \
             -e GUILD_ID="${{ secrets.GUILD_ID }}" \
             -e DATABASE_URL="postgresql://placeholder/placeholder" \
+            -e INTERNAL_TOKEN="placeholder-registerCommands-only-not-a-secret" \
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest \
             node dist/bot/registerCommands.js
 
