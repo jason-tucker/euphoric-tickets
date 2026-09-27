@@ -190,6 +190,7 @@ export async function seedTeam(opts: {
   guild?: FakeGuild
   slug?: string
   adminRoleIds?: string[]
+  staffRoleIds?: string[]
   category?: Partial<Pick<TicketCategory, 'key' | 'label' | 'staffRoleIds' | 'integrationOnly' | 'allowRoleIds' | 'staffOnly'>>
 } = {}): Promise<{ guild: FakeGuild; business: Business; category: TicketCategory; parentId: string }> {
   const guild = opts.guild ?? new FakeGuild()
@@ -201,6 +202,7 @@ export async function seedTeam(opts: {
       name: 'Test Team',
       discordGuildId: guild.id,
       adminRoleIds: (opts.adminRoleIds ?? []).join(','),
+      staffRoleIds: (opts.staffRoleIds ?? []).join(','),
       discordFallbackCategoryId: parentId,
     })
     .returning()

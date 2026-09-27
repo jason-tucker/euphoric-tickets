@@ -11,6 +11,7 @@ import { openBody, seedIntegration, stubFetch } from './helpers'
 
 const ADMIN_ROLE = '200000000000000010' // team admin_role_ids ("Ticket Master")
 const MANAGER_ROLE = '200000000000000011' // category staff only (EFM Managers)
+const TEAM_STAFF_ROLE = '200000000000000012' // businesses.staff_role_ids ("Team Member")
 
 beforeEach(() => {
   stubFetch()
@@ -26,6 +27,7 @@ async function openIntegrationTicket() {
   const second = await seedTeam({
     guild: first.guild,
     adminRoleIds: [ADMIN_ROLE],
+    staffRoleIds: [TEAM_STAFF_ROLE],
     category: { key: 'newsong', staffRoleIds: MANAGER_ROLE, integrationOnly: true },
   })
   const guild = first.guild
@@ -118,7 +120,7 @@ describe('POST /api/internal/tickets/close', () => {
   it('no actor → closes as the bot; opener DM links the correct business', async () => {
     const s = await openIntegrationTicket()
     const res = await handleIntegrationClose(s.client, { ticketId: s.ticketId, businessId: s.second.business.id })
-    expect(res).toEqual({ status: 200, body: { closed: true } })
+    expect(res).toEqual({ status: 200, body: { closed: true, closedBy: 'bot' } })
 
     const [t] = await db.select().from(tickets).where(eq(tickets.id, s.ticketId))
     expect(t.status).toBe('closed')
@@ -144,7 +146,7 @@ describe('POST /api/internal/tickets/close', () => {
       actorDiscordId: s.manager.id,
       reason: 'All songs reviewed',
     })
-    expect(res.status).toBe(200)
+    expect(res).toEqual({ status: 200, body: { closed: true, closedBy: 'actor' } })
     const [t] = await db.select().from(tickets).where(eq(tickets.id, s.ticketId))
     expect(t.closedByUserId).toBe(await userIdFor(s.manager.id))
     expect(s.opener.sentDMs[0].content).toContain('closed by manager')
@@ -153,11 +155,48 @@ describe('POST /api/internal/tickets/close', () => {
     expect(closed.metadata).toMatchObject({ via: `integration:${s.integration.slug}`, reason: 'All songs reviewed' })
   })
 
-  it('a non-staff actor falls back to the bot as closer', async () => {
+  it('a non-staff actor falls back to the bot as closer (closedBy: bot)', async () => {
     const s = await openIntegrationTicket()
-    await handleIntegrationClose(s.client, { ticketId: s.ticketId, businessId: s.second.business.id, actorDiscordId: s.outsider.id })
+    const res = await handleIntegrationClose(s.client, { ticketId: s.ticketId, businessId: s.second.business.id, actorDiscordId: s.outsider.id })
+    expect(res).toEqual({ status: 200, body: { closed: true, closedBy: 'bot' } })
     const [t] = await db.select().from(tickets).where(eq(tickets.id, s.ticketId))
     expect(t.closedByUserId).toBe(await userIdFor(s.guild.me.id))
+  })
+
+  // Integration actor staff = category staff ∪ team staff ∪ team admin roles —
+  // identical to the web's checkActor; ManageGuild / sudo do NOT count.
+  for (const [label, opts, expected] of [
+    ['team staff (businesses.staff_role_ids) only', { roles: [TEAM_STAFF_ROLE] }, 'actor'],
+    ['team admin role only', { roles: [ADMIN_ROLE] }, 'actor'],
+    ['Manage Server with no staff role', { manageGuild: true }, 'bot'],
+    ['a pending member holding a staff role', { roles: [TEAM_STAFF_ROLE], pending: true }, 'bot'],
+  ] as const) {
+    it(`close actor rule: ${label} → closedBy ${expected}`, async () => {
+      const s = await openIntegrationTicket()
+      const actor = s.guild.addMember({ username: 'actor', ...opts })
+      const res = await handleIntegrationClose(s.client, { ticketId: s.ticketId, businessId: s.second.business.id, actorDiscordId: actor.id })
+      expect(res).toEqual({ status: 200, body: { closed: true, closedBy: expected } })
+      const [t] = await db.select().from(tickets).where(eq(tickets.id, s.ticketId))
+      expect(t.closedByUserId).toBe(await userIdFor(expected === 'actor' ? actor.id : s.guild.me.id))
+    })
+  }
+
+  it('the DB-only close (channel gone) also reports closedBy and records the staff actor', async () => {
+    const s = await openIntegrationTicket()
+    await s.channel.delete()
+    const actor = s.guild.addMember({ username: 'teamstaff', roles: [TEAM_STAFF_ROLE] })
+    const res = await handleIntegrationClose(s.client, { ticketId: s.ticketId, businessId: s.second.business.id, actorDiscordId: actor.id })
+    expect(res).toEqual({ status: 200, body: { closed: true, closedBy: 'actor' } })
+    const [t] = await db.select().from(tickets).where(eq(tickets.id, s.ticketId))
+    expect(t.closedByUserId).toBe(await userIdFor(actor.id))
+  })
+
+  it('human Discord flows are unchanged: Manage Server still passes the Close button', async () => {
+    const s = await openIntegrationTicket()
+    const mg = s.guild.addMember({ username: 'mod', manageGuild: true })
+    const i = buttonInteraction(s.guild, s.channel, mg, `tk:close:${s.ticketId}`)
+    await handleTicketClose(i as any)
+    expect(componentsJson((i.editReply.mock.calls[0] as any)[0])).toContain(`tk:close_confirm:${s.ticketId}`)
   })
 
   it('409 already_closed, and 404 for a mismatched business', async () => {

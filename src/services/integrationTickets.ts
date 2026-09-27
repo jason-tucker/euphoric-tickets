@@ -16,7 +16,7 @@ import { tickets, type IntegrationCard, type Ticket } from '../db/schema/tickets
 import { integrationOpenClaims } from '../db/schema/integrationOpenClaims'
 import { integrations } from '../db/schema/integrations'
 import { closeTicket, ensureTicketWebhook, openTicket, type IntegrationIdentity } from './ticketService'
-import { isStaffForCategory } from './permissions'
+import { isIntegrationActorStaff } from './permissions'
 import { getOrCreateUserByDiscordId } from './userResolver'
 import { writeAudit } from './audit'
 import { log } from './logger'
@@ -362,15 +362,19 @@ export async function handleIntegrationClose(client: Client, raw: unknown): Prom
   const guild = availableGuild(client, business.discordGuildId)
   if (!guild) return err(503, 'guild_unavailable')
 
-  // Closer: the actor when given AND staff for the ticket's category; else the bot.
+  // Closer: the actor when given AND integration-actor staff (category staff ∪
+  // team staff ∪ team admin roles — the web's checkActor set, no ManageGuild /
+  // sudo); otherwise the bot. `closedBy` in the response makes the fallback
+  // visible to the web.
   const [category] = ticket.categoryId
     ? await db.select().from(ticketCategories).where(eq(ticketCategories.id, ticket.categoryId)).limit(1)
     : [null]
   let closer: GuildMember | null = null
   if (actorDiscordId) {
     const actor = await guild.members.fetch({ user: actorDiscordId, force: true }).catch(() => null)
-    if (actor && isStaffForCategory(actor, business, category ?? null)) closer = actor
+    if (actor && !actor.pending && isIntegrationActorStaff(actor, business, category ?? null)) closer = actor
   }
+  const closedBy: 'actor' | 'bot' = closer ? 'actor' : 'bot'
   if (!closer) closer = guild.members.me ?? (await guild.members.fetchMe().catch(() => null))
   if (!closer) return err(503, 'guild_unavailable')
 
@@ -401,7 +405,7 @@ export async function handleIntegrationClose(client: Client, raw: unknown): Prom
       action: 'closed',
       metadata: { via, ...(reason ? { reason } : {}) },
     })
-    return { status: 200, body: { closed: true } }
+    return { status: 200, body: { closed: true, closedBy } }
   }
 
   const result = await closeTicket({ guild, channel: found.channel, ticket, closer, business, reason, via })
@@ -409,7 +413,7 @@ export async function handleIntegrationClose(client: Client, raw: unknown): Prom
     if (result.code === 'already_closed') return err(409, 'already_closed')
     return { status: 422, body: { error: result.code ?? 'close_refused', reason: result.reason } }
   }
-  return { status: 200, body: { closed: true } }
+  return { status: 200, body: { closed: true, closedBy } }
 }
 
 // ───────────────────────────── webhook/ensure ─────────────────────────────

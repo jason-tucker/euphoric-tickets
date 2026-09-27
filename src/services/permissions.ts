@@ -75,6 +75,29 @@ export function isStaffForCategory(
   return staffIds.some((id) => member.roles.cache.has(id))
 }
 
+// Integration API actor rule — the staff set for an actor named by an
+// integration (the close route's actorDiscordId). Deliberately ROLE-BASED
+// ONLY and identical to the web's checkActor/staffRoleIdsForCategory:
+//   category staff_role_ids ∪ businesses.staff_role_ids ∪ businesses.admin_role_ids.
+// Unlike isStaffForCategory it does NOT count Manage Server / Administrator
+// or sudo, and the category list does not "fall back" — it is a union. Do not
+// use it for human Discord flows (buttons, slash commands), which keep
+// isStaffForCategory.
+export function integrationActorStaffRoleIds(
+  business: Pick<Business, 'staffRoleIds' | 'adminRoleIds'>,
+  category: Pick<TicketCategory, 'staffRoleIds'> | null | undefined,
+): string[] {
+  return [...new Set([...parseCsv(category?.staffRoleIds), ...parseCsv(business.staffRoleIds), ...parseCsv(business.adminRoleIds)])]
+}
+
+export function isIntegrationActorStaff(
+  member: GuildMember,
+  business: Pick<Business, 'staffRoleIds' | 'adminRoleIds'>,
+  category: Pick<TicketCategory, 'staffRoleIds'> | null | undefined,
+): boolean {
+  return integrationActorStaffRoleIds(business, category).some((id) => member.roles.cache.has(id))
+}
+
 // Panel-button gate. Empty allow_role_ids = anyone in the guild may open;
 // non-empty = require at least one matching role. Admins always pass.
 export function canOpenCategory(
