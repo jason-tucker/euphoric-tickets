@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AddressInfo } from 'node:net'
+import http from 'node:http'
 import { and, eq } from 'drizzle-orm'
 import { db } from '../src/db/client'
 import { auditLogs, integrationOpenClaims, tickets } from '../src/db/schema'
@@ -591,3 +592,79 @@ describe('card link URL — Discord 512-char link-button limit', () => {
     expect((await getClaim(s.integration.id, body.externalRef)).state).toBe('open')
   })
 })
+
+describe('internal HTTP bridge — body decoding', () => {
+  // Writes the body as two separate TCP writes, split at byte `at`.
+  function postSplit(base: string, path: string, body: Buffer, at: number): Promise<{ status: number; json: any }> {
+    const u = new URL(base + path)
+    return new Promise((resolve, reject) => {
+      const req = http.request(
+        {
+          host: u.hostname,
+          port: u.port,
+          path: u.pathname,
+          method: 'POST',
+          headers: {
+            'x-internal-token': process.env.INTERNAL_TOKEN!,
+            'content-type': 'application/json',
+            'content-length': body.length,
+          },
+        },
+        (res) => {
+          const parts: Buffer[] = []
+          res.on('data', (c) => parts.push(c))
+          res.on('end', () => {
+            const text = Buffer.concat(parts).toString('utf8')
+            resolve({ status: res.statusCode!, json: text ? JSON.parse(text) : null })
+          })
+        },
+      )
+      req.on('error', reject)
+      req.write(body.subarray(0, at))
+      setTimeout(() => req.end(body.subarray(at)), 100)
+    })
+  }
+
+  it('a multi-byte character split across chunks survives intact', async () => {
+    const s = await setup()
+    const server = createInternalServer(s.client)
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r))
+    const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`
+    try {
+      const subject = 'Ä'.repeat(50)
+      const payload = Buffer.from(JSON.stringify(openBody({ integration: s.integration, business: s.business, category: s.category, openerDiscordId: s.opener.id, subject })), 'utf8')
+      // Split INSIDE the first 'Ä' (0xC3 0x84).
+      const at = payload.indexOf(Buffer.from('Ä', 'utf8')) + 1
+      expect(payload[at - 1]).toBe(0xc3)
+      const r = await postSplit(base, '/api/internal/tickets/open', payload, at)
+      expect(r.status).toBe(201)
+      const [t] = await db.select().from(tickets).where(eq(tickets.id, r.json.ticketId))
+      expect(t.subject).toBe(subject)
+    } finally {
+      await new Promise<void>((r) => server.close(() => r()))
+    }
+  })
+
+  it('the 16 KB cap counts bytes, not characters', async () => {
+    const s = await setup()
+    const server = createInternalServer(s.client)
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r))
+    const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`
+    try {
+      const body = openBody({ integration: s.integration, business: s.business, category: s.category, openerDiscordId: s.opener.id })
+      // ~9 000 characters but ~18 000 bytes.
+      const payload = Buffer.from(JSON.stringify({ ...body, pad: 'Ä'.repeat(9000) }), 'utf8')
+      expect(JSON.stringify({ ...body, pad: 'Ä'.repeat(9000) }).length).toBeLessThan(16_000)
+      expect(payload.length).toBeGreaterThan(16_000)
+      const out = await postSplit(base, '/api/internal/tickets/open', payload, 8000).then(
+        (x) => x.status,
+        () => 'reset',
+      )
+      expect(out).toBe('reset')
+      expect(s.guild.liveTextChannels()).toHaveLength(0)
+    } finally {
+      await new Promise<void>((r) => server.close(() => r()))
+    }
+  })
+})
+

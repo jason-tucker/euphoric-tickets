@@ -71,6 +71,9 @@ const INTEGRATION_ROUTES: Record<string, (client: Client, body: unknown) => Prom
   '/api/internal/tickets/webhook/ensure': handleWebhookEnsure,
 }
 
+// Request body cap, in bytes (the web budgets its open payload under it).
+export const MAX_BODY_BYTES = 16_000
+
 // Builds (does not bind) the internal server. Split from startInternalHttp so
 // tests can listen on an ephemeral port.
 export function createInternalServer(client: Client): http.Server {
@@ -96,12 +99,25 @@ export function createInternalServer(client: Client): http.Server {
       return
     }
     const url = req.url
-    let raw = ''
-    req.on('data', (c) => {
-      raw += c
-      if (raw.length > 16_000) req.destroy()
+    // Collect raw Buffers and decode ONCE: decoding per chunk would turn a
+    // multi-byte UTF-8 character split across two TCP chunks into U+FFFD.
+    // The cap is in BYTES.
+    const chunks: Buffer[] = []
+    let size = 0
+    let tooBig = false
+    req.on('data', (c: Buffer) => {
+      if (tooBig) return
+      size += c.length
+      if (size > MAX_BODY_BYTES) {
+        tooBig = true
+        req.destroy()
+        return
+      }
+      chunks.push(c)
     })
     req.on('end', () => {
+      if (tooBig) return
+      const raw = Buffer.concat(chunks).toString('utf8')
       void (async () => {
         try {
           const integrationRoute = INTEGRATION_ROUTES[url]
