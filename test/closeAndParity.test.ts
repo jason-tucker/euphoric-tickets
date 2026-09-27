@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { eq } from 'drizzle-orm'
 import { ChannelType } from 'discord.js'
 import { db } from '../src/db/client'
-import { auditLogs, tickets, users } from '../src/db/schema'
+import { auditLogs, integrations, tickets, users } from '../src/db/schema'
 import { handleIntegrationClose, handleIntegrationOpen } from '../src/services/integrationTickets'
 import { handleTicketClaim } from '../src/interactions/buttons/ticketClaim'
 import { handleTicketClose } from '../src/interactions/buttons/ticketClose'
@@ -119,7 +119,7 @@ describe('Claim parity (welcome-card button)', () => {
 describe('POST /api/internal/tickets/close', () => {
   it('no actor → closes as the bot; opener DM links the correct business', async () => {
     const s = await openIntegrationTicket()
-    const res = await handleIntegrationClose(s.client, { ticketId: s.ticketId, businessId: s.second.business.id })
+    const res = await handleIntegrationClose(s.client, { ticketId: s.ticketId, businessId: s.second.business.id, integrationId: s.integration.id })
     expect(res).toEqual({ status: 200, body: { closed: true, closedBy: 'bot' } })
 
     const [t] = await db.select().from(tickets).where(eq(tickets.id, s.ticketId))
@@ -142,7 +142,7 @@ describe('POST /api/internal/tickets/close', () => {
     const s = await openIntegrationTicket()
     const res = await handleIntegrationClose(s.client, {
       ticketId: s.ticketId,
-      businessId: s.second.business.id,
+      businessId: s.second.business.id, integrationId: s.integration.id,
       actorDiscordId: s.manager.id,
       reason: 'All songs reviewed',
     })
@@ -157,7 +157,7 @@ describe('POST /api/internal/tickets/close', () => {
 
   it('a non-staff actor falls back to the bot as closer (closedBy: bot)', async () => {
     const s = await openIntegrationTicket()
-    const res = await handleIntegrationClose(s.client, { ticketId: s.ticketId, businessId: s.second.business.id, actorDiscordId: s.outsider.id })
+    const res = await handleIntegrationClose(s.client, { ticketId: s.ticketId, businessId: s.second.business.id, integrationId: s.integration.id, actorDiscordId: s.outsider.id })
     expect(res).toEqual({ status: 200, body: { closed: true, closedBy: 'bot' } })
     const [t] = await db.select().from(tickets).where(eq(tickets.id, s.ticketId))
     expect(t.closedByUserId).toBe(await userIdFor(s.guild.me.id))
@@ -174,7 +174,7 @@ describe('POST /api/internal/tickets/close', () => {
     it(`close actor rule: ${label} → closedBy ${expected}`, async () => {
       const s = await openIntegrationTicket()
       const actor = s.guild.addMember({ username: 'actor', ...opts })
-      const res = await handleIntegrationClose(s.client, { ticketId: s.ticketId, businessId: s.second.business.id, actorDiscordId: actor.id })
+      const res = await handleIntegrationClose(s.client, { ticketId: s.ticketId, businessId: s.second.business.id, integrationId: s.integration.id, actorDiscordId: actor.id })
       expect(res).toEqual({ status: 200, body: { closed: true, closedBy: expected } })
       const [t] = await db.select().from(tickets).where(eq(tickets.id, s.ticketId))
       expect(t.closedByUserId).toBe(await userIdFor(expected === 'actor' ? actor.id : s.guild.me.id))
@@ -185,7 +185,7 @@ describe('POST /api/internal/tickets/close', () => {
     const s = await openIntegrationTicket()
     await s.channel.delete()
     const actor = s.guild.addMember({ username: 'teamstaff', roles: [TEAM_STAFF_ROLE] })
-    const res = await handleIntegrationClose(s.client, { ticketId: s.ticketId, businessId: s.second.business.id, actorDiscordId: actor.id })
+    const res = await handleIntegrationClose(s.client, { ticketId: s.ticketId, businessId: s.second.business.id, integrationId: s.integration.id, actorDiscordId: actor.id })
     expect(res).toEqual({ status: 200, body: { closed: true, closedBy: 'actor' } })
     const [t] = await db.select().from(tickets).where(eq(tickets.id, s.ticketId))
     expect(t.closedByUserId).toBe(await userIdFor(actor.id))
@@ -199,11 +199,23 @@ describe('POST /api/internal/tickets/close', () => {
     expect(componentsJson((i.editReply.mock.calls[0] as any)[0])).toContain(`tk:close_confirm:${s.ticketId}`)
   })
 
-  it('409 already_closed, and 404 for a mismatched business', async () => {
+  it('409 already_closed; 403 for a mismatched business, 404 for another integration, 400 without integrationId', async () => {
     const s = await openIntegrationTicket()
-    expect((await handleIntegrationClose(s.client, { ticketId: s.ticketId, businessId: s.first.business.id })).status).toBe(404)
-    expect((await handleIntegrationClose(s.client, { ticketId: s.ticketId, businessId: s.second.business.id })).status).toBe(200)
-    expect(await handleIntegrationClose(s.client, { ticketId: s.ticketId, businessId: s.second.business.id })).toEqual({
+    expect(await handleIntegrationClose(s.client, { ticketId: s.ticketId, businessId: s.first.business.id, integrationId: s.integration.id })).toEqual({
+      status: 403,
+      body: { error: 'integration_forbidden' },
+    })
+    const sibling = await seedIntegration(s.second.business.id)
+    expect(await handleIntegrationClose(s.client, { ticketId: s.ticketId, businessId: s.second.business.id, integrationId: sibling.id })).toEqual({
+      status: 404,
+      body: { error: 'not_found' },
+    })
+    expect((await handleIntegrationClose(s.client, { ticketId: s.ticketId, businessId: s.second.business.id })).status).toBe(400)
+    await db.update(integrations).set({ enabled: false }).where(eq(integrations.id, s.integration.id))
+    expect((await handleIntegrationClose(s.client, { ticketId: s.ticketId, businessId: s.second.business.id, integrationId: s.integration.id })).status).toBe(403)
+    await db.update(integrations).set({ enabled: true }).where(eq(integrations.id, s.integration.id))
+    expect((await handleIntegrationClose(s.client, { ticketId: s.ticketId, businessId: s.second.business.id, integrationId: s.integration.id })).status).toBe(200)
+    expect(await handleIntegrationClose(s.client, { ticketId: s.ticketId, businessId: s.second.business.id, integrationId: s.integration.id })).toEqual({
       status: 409,
       body: { error: 'already_closed' },
     })
@@ -212,7 +224,7 @@ describe('POST /api/internal/tickets/close', () => {
   it('closes the row when the channel is already gone', async () => {
     const s = await openIntegrationTicket()
     await s.channel.delete()
-    expect((await handleIntegrationClose(s.client, { ticketId: s.ticketId, businessId: s.second.business.id })).status).toBe(200)
+    expect((await handleIntegrationClose(s.client, { ticketId: s.ticketId, businessId: s.second.business.id, integrationId: s.integration.id })).status).toBe(200)
     const [t] = await db.select().from(tickets).where(eq(tickets.id, s.ticketId))
     expect(t.status).toBe('closed')
   })
@@ -228,7 +240,7 @@ describe('POST /api/internal/tickets/close', () => {
       s.guild.channels.fetch = async () => {
         throw e
       }
-      expect(await handleIntegrationClose(s.client, { ticketId: s.ticketId, businessId: s.second.business.id })).toEqual({
+      expect(await handleIntegrationClose(s.client, { ticketId: s.ticketId, businessId: s.second.business.id, integrationId: s.integration.id })).toEqual({
         status: 503,
         body: { error: 'guild_unavailable' },
       })
@@ -238,7 +250,7 @@ describe('POST /api/internal/tickets/close', () => {
       expect(s.channel.deleted).toBe(false)
     }
     s.guild.channels.fetch = realFetch
-    expect((await handleIntegrationClose(s.client, { ticketId: s.ticketId, businessId: s.second.business.id })).status).toBe(200)
+    expect((await handleIntegrationClose(s.client, { ticketId: s.ticketId, businessId: s.second.business.id, integrationId: s.integration.id })).status).toBe(200)
     expect(s.channel.deleted).toBe(true)
     expect(s.opener.sentDMs).toHaveLength(1)
   })
@@ -246,7 +258,7 @@ describe('POST /api/internal/tickets/close', () => {
   it('a channel id that now resolves to a non-text channel counts as gone', async () => {
     const s = await openIntegrationTicket()
     s.guild.channelMap.set(s.channel.id, { id: s.channel.id, type: ChannelType.GuildVoice })
-    expect((await handleIntegrationClose(s.client, { ticketId: s.ticketId, businessId: s.second.business.id })).status).toBe(200)
+    expect((await handleIntegrationClose(s.client, { ticketId: s.ticketId, businessId: s.second.business.id, integrationId: s.integration.id })).status).toBe(200)
     const [t] = await db.select().from(tickets).where(eq(tickets.id, s.ticketId))
     expect(t.status).toBe('closed')
   })

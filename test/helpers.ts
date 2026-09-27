@@ -19,7 +19,7 @@ export function stubFetch() {
   return { calls, spy }
 }
 
-export async function seedIntegration(businessId: string) {
+export async function seedIntegration(businessId: string, opts: { allowedCategoryKeys?: string[]; enabled?: boolean } = {}) {
   const slug = `efm-music-${randomUUID().slice(0, 8)}`
   const [row] = await db
     .insert(integrations)
@@ -30,7 +30,8 @@ export async function seedIntegration(businessId: string) {
       keyPrefix: randomUUID().replace(/-/g, '').slice(0, 10),
       keyHash: 'test-hash-not-a-secret',
       scopes: ['tickets:read', 'tickets:write', 'tickets:close'],
-      allowedCategoryKeys: ['newsong'],
+      allowedCategoryKeys: opts.allowedCategoryKeys ?? ['newsong'],
+      enabled: opts.enabled ?? true,
     })
     .returning()
   return { id: row.id, slug: row.slug, name: row.name }

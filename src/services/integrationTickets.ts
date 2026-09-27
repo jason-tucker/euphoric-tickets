@@ -1,9 +1,16 @@
 // Integration API (v0.8.0) — the bot half. The web (euphoric-tickets-web)
 // authenticates integration API keys, scopes them to one business, validates
 // the payload, and then calls these through the internal HTTP bridge
-// (src/bot/internalHttp.ts, x-internal-token). The bot trusts only that token:
-// it never re-checks API keys, and it ALWAYS takes the business by id — never
-// from the guild, because several teams can share one guild.
+// (src/bot/internalHttp.ts, x-internal-token). The bot never re-checks API
+// keys, and it ALWAYS takes the business by id — never from the guild, because
+// several teams can share one guild. As defense in depth it re-checks the
+// integration binding against the mirrored `integrations` row on every route
+// (exists, enabled, same business; open: category key allowlisted;
+// close/ensure: the ticket belongs to that integration).
+//
+// Markdown: subject, card.title, card.lines and the close reason arrive
+// ALREADY escaped by the web (escapeDiscordMarkdown at its /api/v1 boundary).
+// The bot renders them as received and must never escape them a second time.
 //
 // Contract: the "Tickets Integration API" §4.4 of the EFM Music Portal plan.
 
@@ -96,6 +103,44 @@ export function parseOpenRequest(raw: unknown): OpenRequest | null {
 }
 
 // ───────────────────────────── helpers ─────────────────────────────
+
+// Defense in depth on the integration binding. The web already authenticated
+// and scoped the key; the bot re-checks the (mirrored, web-owned)
+// integrations row so a leaked INTERNAL_TOKEN alone can't act across teams or
+// integrations: the integration must exist, be enabled, and belong to the
+// business the request names.
+type BoundIntegration = { id: string; slug: string; allowedCategoryKeys: string[] }
+
+async function loadBoundIntegration(integrationId: string, businessId: string): Promise<BoundIntegration | null> {
+  const [row] = await db
+    .select({
+      id: integrations.id,
+      slug: integrations.slug,
+      businessId: integrations.businessId,
+      enabled: integrations.enabled,
+      allowedCategoryKeys: integrations.allowedCategoryKeys,
+    })
+    .from(integrations)
+    .where(eq(integrations.id, integrationId))
+    .limit(1)
+  if (!row || !row.enabled || row.businessId !== businessId) return null
+  return { id: row.id, slug: row.slug, allowedCategoryKeys: row.allowedCategoryKeys }
+}
+
+// Shared body validation for /close and /webhook/ensure: both carry
+// {ticketId, businessId, integrationId}.
+function parseTicketRef(b: Record<string, unknown>): { ticketId: number; businessId: string; integrationId: string } | null {
+  if (typeof b.ticketId !== 'number' || !Number.isInteger(b.ticketId)) return null
+  if (typeof b.businessId !== 'string' || !UUID_RE.test(b.businessId)) return null
+  if (typeof b.integrationId !== 'string' || !UUID_RE.test(b.integrationId)) return null
+  return { ticketId: b.ticketId, businessId: b.businessId, integrationId: b.integrationId }
+}
+
+// The ticket, scoped to (id, business) AND owned by the integration; else null.
+async function loadIntegrationTicket(ref: { ticketId: number; businessId: string; integrationId: string }): Promise<Ticket | null> {
+  const t = await loadTicket(ref.ticketId, ref.businessId)
+  return t && t.integrationId === ref.integrationId ? t : null
+}
 
 async function loadBusiness(businessId: string): Promise<Business | null> {
   const [b] = await db.select().from(businesses).where(eq(businesses.id, businessId)).limit(1)
@@ -234,6 +279,10 @@ export async function handleIntegrationOpen(client: Client, raw: unknown): Promi
   const req = parseOpenRequest(raw)
   if (!req) return err(400, 'validation')
 
+  const bound = await loadBoundIntegration(req.integrationId, req.businessId)
+  if (!bound) return err(403, 'integration_forbidden')
+  if (!bound.allowedCategoryKeys.includes(req.categoryKey)) return err(403, 'category_forbidden')
+
   const business = await loadBusiness(req.businessId)
   if (!business) return err(404, 'business_not_found')
   const [category] = await db
@@ -337,22 +386,14 @@ export async function handleIntegrationOpen(client: Client, raw: unknown): Promi
 
 // ───────────────────────────── close ─────────────────────────────
 
-// The integration's slug for audit attribution — the close route's contract
-// carries no slug, so read it from the (web-owned) integrations row.
-async function integrationSlugFor(integrationId: string | null): Promise<string | null> {
-  if (!integrationId) return null
-  const [row] = await db
-    .select({ slug: integrations.slug })
-    .from(integrations)
-    .where(eq(integrations.id, integrationId))
-    .limit(1)
-  return row?.slug ?? null
-}
-
+// Close-reason markdown: `reason` arrives ALREADY markdown-escaped by the web
+// (euphoric-tickets-web src/server/integrations/api.ts escapes it at the
+// /api/v1 boundary) and is passed through to the opener DM and the audit
+// as-is. Do not escape it again here.
 export async function handleIntegrationClose(client: Client, raw: unknown): Promise<RouteResult> {
   const b = (raw ?? {}) as Record<string, unknown>
-  if (typeof b.ticketId !== 'number' || !Number.isInteger(b.ticketId)) return err(400, 'validation')
-  if (typeof b.businessId !== 'string' || !UUID_RE.test(b.businessId)) return err(400, 'validation')
+  const ref = parseTicketRef(b)
+  if (!ref) return err(400, 'validation')
   if (b.actorDiscordId !== undefined && b.actorDiscordId !== null && (typeof b.actorDiscordId !== 'string' || !SNOWFLAKE_RE.test(b.actorDiscordId))) {
     return err(400, 'validation')
   }
@@ -360,14 +401,15 @@ export async function handleIntegrationClose(client: Client, raw: unknown): Prom
   const actorDiscordId = (b.actorDiscordId as string | null | undefined) ?? null
   const reason = typeof b.reason === 'string' && b.reason.trim() ? b.reason.trim().slice(0, 500) : undefined
 
-  const business = await loadBusiness(b.businessId)
+  const bound = await loadBoundIntegration(ref.integrationId, ref.businessId)
+  if (!bound) return err(403, 'integration_forbidden')
+  const business = await loadBusiness(ref.businessId)
   if (!business) return err(404, 'not_found')
-  const ticket = await loadTicket(b.ticketId, business.id)
+  const ticket = await loadIntegrationTicket(ref)
   if (!ticket) return err(404, 'not_found')
   if (ticket.status === 'closed') return err(409, 'already_closed')
 
-  const slug = await integrationSlugFor(ticket.integrationId)
-  const via = slug ? `integration:${slug}` : 'integration'
+  const via = `integration:${bound.slug}`
 
   const guild = availableGuild(client, business.discordGuildId)
   if (!guild) return err(503, 'guild_unavailable')
@@ -429,13 +471,14 @@ export async function handleIntegrationClose(client: Client, raw: unknown): Prom
 // ───────────────────────────── webhook/ensure ─────────────────────────────
 
 export async function handleWebhookEnsure(client: Client, raw: unknown): Promise<RouteResult> {
-  const b = (raw ?? {}) as Record<string, unknown>
-  if (typeof b.ticketId !== 'number' || !Number.isInteger(b.ticketId)) return err(400, 'validation')
-  if (typeof b.businessId !== 'string' || !UUID_RE.test(b.businessId)) return err(400, 'validation')
+  const ref = parseTicketRef((raw ?? {}) as Record<string, unknown>)
+  if (!ref) return err(400, 'validation')
 
-  const business = await loadBusiness(b.businessId)
+  const bound = await loadBoundIntegration(ref.integrationId, ref.businessId)
+  if (!bound) return err(403, 'integration_forbidden')
+  const business = await loadBusiness(ref.businessId)
   if (!business) return err(404, 'not_found')
-  const ticket = await loadTicket(b.ticketId, business.id)
+  const ticket = await loadIntegrationTicket(ref)
   if (!ticket) return err(404, 'not_found')
   if (ticket.discordWebhookUrl) return { status: 200, body: { webhookUrl: ticket.discordWebhookUrl } }
 

@@ -3,7 +3,7 @@ import type { AddressInfo } from 'node:net'
 import http from 'node:http'
 import { and, eq } from 'drizzle-orm'
 import { db } from '../src/db/client'
-import { auditLogs, integrationOpenClaims, tickets } from '../src/db/schema'
+import { auditLogs, integrationOpenClaims, integrations, tickets } from '../src/db/schema'
 import { handleIntegrationOpen, handleWebhookEnsure } from '../src/services/integrationTickets'
 import { ensureTicketWebhook } from '../src/services/ticketService'
 import { safeLinkUrl } from '../src/services/ticketRenderer'
@@ -24,7 +24,7 @@ afterEach(() => {
 async function setup(category: Parameters<typeof seedTeam>[0]['category'] = {}) {
   const team = await seedTeam({ category: { staffRoleIds: STAFF_ROLE, integrationOnly: true, ...category } })
   const opener = team.guild.addMember({ username: 'songwriter' })
-  const integration = await seedIntegration(team.business.id)
+  const integration = await seedIntegration(team.business.id, { allowedCategoryKeys: [team.category.key] })
   const client = fakeClient(team.guild)
   return { ...team, opener, integration, client }
 }
@@ -118,7 +118,7 @@ describe('POST /api/internal/tickets/open — happy path', () => {
 
     // Retry path.
     s.guild.liveTextChannels()[0].failCreateWebhook = false
-    const ensured = await handleWebhookEnsure(s.client, { ticketId: t.id, businessId: s.business.id })
+    const ensured = await handleWebhookEnsure(s.client, { ticketId: t.id, businessId: s.business.id, integrationId: s.integration.id })
     expect(ensured.status).toBe(200)
     const [after] = await db.select().from(tickets).where(eq(tickets.id, t.id))
     expect(ensured.body.webhookUrl).toBe(after.discordWebhookUrl)
@@ -307,6 +307,35 @@ describe('open — claim rules', () => {
   })
 })
 
+describe('integration binding (defense in depth)', () => {
+  it('open: 403 integration_forbidden for a disabled integration or one of another business', async () => {
+    const s = await setup()
+    const body = openBody({ integration: s.integration, business: s.business, category: s.category, openerDiscordId: s.opener.id })
+    const other = await seedTeam()
+    const foreign = await seedIntegration(other.business.id)
+    expect(await handleIntegrationOpen(s.client, { ...body, integrationId: foreign.id })).toEqual({
+      status: 403,
+      body: { error: 'integration_forbidden' },
+    })
+    await db.update(integrations).set({ enabled: false }).where(eq(integrations.id, s.integration.id))
+    expect(await handleIntegrationOpen(s.client, body)).toEqual({ status: 403, body: { error: 'integration_forbidden' } })
+    expect(await handleWebhookEnsure(s.client, { ticketId: 1, businessId: s.business.id, integrationId: s.integration.id })).toEqual({
+      status: 403,
+      body: { error: 'integration_forbidden' },
+    })
+    expect(s.guild.liveTextChannels()).toHaveLength(0)
+    expect(await getClaim(s.integration.id, body.externalRef)).toBeUndefined()
+  })
+
+  it('open: 403 category_forbidden when the category key is not in allowed_category_keys', async () => {
+    const s = await setup()
+    await db.update(integrations).set({ allowedCategoryKeys: ['other'] }).where(eq(integrations.id, s.integration.id))
+    const body = openBody({ integration: s.integration, business: s.business, category: s.category, openerDiscordId: s.opener.id })
+    expect(await handleIntegrationOpen(s.client, body)).toEqual({ status: 403, body: { error: 'category_forbidden' } })
+    expect(s.guild.liveTextChannels()).toHaveLength(0)
+  })
+})
+
 describe('open — opener and category errors', () => {
   it('404 opener_not_member (claim marked failed so a retry is not blocked)', async () => {
     const s = await setup()
@@ -394,7 +423,7 @@ describe('webhook/ensure', () => {
     await db.update(tickets).set({ discordWebhookId: null, discordWebhookUrl: null }).where(eq(tickets.id, id))
     const ch = s.guild.liveTextChannels()[0]
     ch.webhooks.length = 0
-    const out = await Promise.all(Array.from({ length: 5 }, () => handleWebhookEnsure(s.client, { ticketId: id, businessId: s.business.id })))
+    const out = await Promise.all(Array.from({ length: 5 }, () => handleWebhookEnsure(s.client, { ticketId: id, businessId: s.business.id, integrationId: s.integration.id })))
     const urls = new Set(out.map((o) => o.body.webhookUrl))
     expect(urls.size).toBe(1)
     expect(ch.webhooks).toHaveLength(1)
@@ -495,23 +524,35 @@ describe('webhook/ensure', () => {
     s.guild.channels.fetch = async () => {
       throw Object.assign(new Error('Missing Access'), { code: 50001 })
     }
-    expect(await handleWebhookEnsure(s.client, { ticketId: id, businessId: s.business.id })).toEqual({
+    expect(await handleWebhookEnsure(s.client, { ticketId: id, businessId: s.business.id, integrationId: s.integration.id })).toEqual({
       status: 503,
       body: { error: 'guild_unavailable' },
     })
     s.guild.channels.fetch = realFetch
     await ch.delete()
-    expect(await handleWebhookEnsure(s.client, { ticketId: id, businessId: s.business.id })).toEqual({
+    expect(await handleWebhookEnsure(s.client, { ticketId: id, businessId: s.business.id, integrationId: s.integration.id })).toEqual({
       status: 404,
       body: { error: 'channel_not_found' },
     })
   })
 
-  it('404s for a ticket of another business', async () => {
+  it('refuses another business (403), another integration (404) and a missing integrationId (400)', async () => {
     const s = await setup()
     const other = await seedTeam()
     const res = await handleIntegrationOpen(s.client, openBody({ integration: s.integration, business: s.business, category: s.category, openerDiscordId: s.opener.id }))
-    expect((await handleWebhookEnsure(s.client, { ticketId: res.body.ticketId, businessId: other.business.id })).status).toBe(404)
+    const ticketId = res.body.ticketId
+    // The integration belongs to s.business, not `other`.
+    expect(await handleWebhookEnsure(s.client, { ticketId, businessId: other.business.id, integrationId: s.integration.id })).toEqual({
+      status: 403,
+      body: { error: 'integration_forbidden' },
+    })
+    // A second integration of the SAME business does not own the ticket.
+    const sibling = await seedIntegration(s.business.id)
+    expect(await handleWebhookEnsure(s.client, { ticketId, businessId: s.business.id, integrationId: sibling.id })).toEqual({
+      status: 404,
+      body: { error: 'not_found' },
+    })
+    expect((await handleWebhookEnsure(s.client, { ticketId, businessId: s.business.id })).status).toBe(400)
   })
 })
 
@@ -539,7 +580,7 @@ describe('internal HTTP bridge', () => {
       expect(again.status).toBe(200)
       expect(await again.json()).toEqual({ ...json, created: false })
 
-      const ens = await post('/api/internal/tickets/webhook/ensure', { ticketId: json.ticketId, businessId: s.business.id })
+      const ens = await post('/api/internal/tickets/webhook/ensure', { ticketId: json.ticketId, businessId: s.business.id, integrationId: s.integration.id })
       expect(ens.status).toBe(200)
       expect(((await ens.json()) as { webhookUrl: string }).webhookUrl).toMatch(/^https:\/\/discord\.com\/api\/webhooks\//)
 
