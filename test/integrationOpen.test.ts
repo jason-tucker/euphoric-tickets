@@ -348,6 +348,21 @@ describe('integration binding (defense in depth)', () => {
     expect(await getClaim(s.integration.id, body.externalRef)).toBeUndefined()
   })
 
+  it('open: the integration slug/name come from the bound row, never the request body', async () => {
+    const s = await setup()
+    const body = {
+      ...openBody({ integration: s.integration, business: s.business, category: s.category, openerDiscordId: s.opener.id }),
+      integrationSlug: 'spoofed-slug',
+      integrationName: 'Spoofed Name',
+    }
+    const res = await handleIntegrationOpen(s.client, body)
+    expect(res.status).toBe(201)
+    const audits = await db.select().from(auditLogs).where(eq(auditLogs.ticketId, res.body.ticketId as number))
+    expect(audits).toHaveLength(1)
+    expect(audits[0].metadata).toMatchObject({ via: `integration:${s.integration.slug}` })
+    expect(JSON.stringify(audits[0].metadata)).not.toContain('spoofed')
+  })
+
   it('open: 403 category_forbidden when the category key is not in allowed_category_keys', async () => {
     const s = await setup()
     await db.update(integrations).set({ allowedCategoryKeys: ['other'] }).where(eq(integrations.id, s.integration.id))

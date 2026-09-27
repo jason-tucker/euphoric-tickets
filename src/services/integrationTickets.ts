@@ -109,13 +109,16 @@ export function parseOpenRequest(raw: unknown): OpenRequest | null {
 // integrations row so a leaked INTERNAL_TOKEN alone can't act across teams or
 // integrations: the integration must exist, be enabled, and belong to the
 // business the request names.
-type BoundIntegration = { id: string; slug: string; allowedCategoryKeys: string[] }
+// The row is also the ONLY source of the integration's identity (slug, name):
+// the open request's integrationSlug / integrationName are ignored.
+type BoundIntegration = { id: string; slug: string; name: string; allowedCategoryKeys: string[] }
 
 async function loadBoundIntegration(integrationId: string, businessId: string): Promise<BoundIntegration | null> {
   const [row] = await db
     .select({
       id: integrations.id,
       slug: integrations.slug,
+      name: integrations.name,
       businessId: integrations.businessId,
       enabled: integrations.enabled,
       allowedCategoryKeys: integrations.allowedCategoryKeys,
@@ -124,7 +127,7 @@ async function loadBoundIntegration(integrationId: string, businessId: string): 
     .where(eq(integrations.id, integrationId))
     .limit(1)
   if (!row || !row.enabled || row.businessId !== businessId) return null
-  return { id: row.id, slug: row.slug, allowedCategoryKeys: row.allowedCategoryKeys }
+  return { id: row.id, slug: row.slug, name: row.name, allowedCategoryKeys: row.allowedCategoryKeys }
 }
 
 // Shared body validation for /close and /webhook/ensure: both carry
@@ -350,11 +353,8 @@ export async function handleIntegrationOpen(client: Client, raw: unknown): Promi
     if (member.pending) return await fail(err(403, 'opener_pending'))
 
     // 3. Open (channel → claim.channel_id → ticket row → webhook → card → …).
-    const integration: IntegrationIdentity = {
-      id: req.integrationId,
-      slug: req.integrationSlug,
-      name: req.integrationName,
-    }
+    // Identity comes from the bound row, never from the request body.
+    const integration: IntegrationIdentity = { id: bound.id, slug: bound.slug, name: bound.name }
     const result = await openTicket({
       guild,
       opener: member,
@@ -379,7 +379,7 @@ export async function handleIntegrationOpen(client: Client, raw: unknown): Promi
     await setClaim(req.integrationId, req.externalRef, { state: 'open', ticketId: result.ticket.id })
     return { status: 201, body: { ticketId: result.ticket.id, channelId: result.channel.id, created: true } }
   } catch (e) {
-    log.error('integration open failed', { integration: req.integrationSlug, externalRef: req.externalRef, err: String(e) })
+    log.error('integration open failed', { integration: bound.slug, externalRef: req.externalRef, err: String(e) })
     return await fail(err(500, 'internal_error'))
   }
 }
