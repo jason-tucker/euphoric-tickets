@@ -4,7 +4,7 @@ import { db } from '../src/db/client'
 import { ticketCategories } from '../src/db/schema'
 import { openTicket } from '../src/services/ticketService'
 import { handleIntegrationOpen } from '../src/services/integrationTickets'
-import { getPanelCategories, replaceTicketCategories, validatePanelCategoriesJson } from '../src/services/settingsService'
+import { getPanelCategories, PANEL_JSON_MAX, panelCategoriesModalJson, replaceTicketCategories, validatePanelCategoriesJson } from '../src/services/settingsService'
 import { handleSettingsModalSubmit } from '../src/interactions/modals/settingsModal'
 import { componentsJson, fakeClient, seedTeam } from './fakes'
 import { openBody, seedIntegration, stubFetch } from './helpers'
@@ -144,5 +144,23 @@ describe('ticket_categories.ping_staff_on_open — settings modal JSON', () => {
     const [after] = await db.select().from(ticketCategories).where(eq(ticketCategories.id, s.category.id))
     expect(after).toEqual(before)
     expect(after.pingStaffOnOpen).toBe(false)
+  })
+})
+
+describe('settings modal JSON size (Discord TextInput 4000-char cap)', () => {
+  it('keeps pingStaffOnOpen when it fits', () => {
+    const cats = [{ key: 'a', label: 'A', pingStaffOnOpen: true }, { key: 'b', label: 'B', pingStaffOnOpen: false }]
+    expect(panelCategoriesModalJson(cats)).toBe(JSON.stringify(cats, null, 2))
+  })
+
+  it('drops only default-true values when the JSON would overflow, and the result round-trips', () => {
+    const long = 'x'.repeat(710)
+    const cats = [0, 1, 2, 3, 4].map((n) => ({ key: `k${n}`, label: `L${n}`, description: long, pingStaffOnOpen: n !== 2 }))
+    expect(JSON.stringify(cats, null, 2).length).toBeGreaterThan(PANEL_JSON_MAX)
+    const out = panelCategoriesModalJson(cats)
+    expect(out.length).toBeLessThanOrEqual(PANEL_JSON_MAX)
+    const parsed = JSON.parse(out) as Array<Record<string, unknown>>
+    expect(parsed.map((c) => c.pingStaffOnOpen)).toEqual([undefined, undefined, false, undefined, undefined])
+    expect(validatePanelCategoriesJson(out).ok).toBe(true)
   })
 })

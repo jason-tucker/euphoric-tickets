@@ -88,6 +88,21 @@ export async function getPanelCategories(
     }))
 }
 
+// Discord caps a TextInput value at 4000 chars. The settings modal pre-fills
+// the panel-category JSON; if it would overflow, drop `pingStaffOnOpen` where
+// it equals the default (true). Safe because an omitted value keeps the
+// category's current value on submit.
+export const PANEL_JSON_MAX = 4000
+export function panelCategoriesModalJson(cats: PanelCategory[]): string {
+  const full = JSON.stringify(cats, null, 2)
+  if (full.length <= PANEL_JSON_MAX) return full
+  return JSON.stringify(
+    cats.map(({ pingStaffOnOpen, ...rest }) => (pingStaffOnOpen === false ? { ...rest, pingStaffOnOpen } : rest)),
+    null,
+    2,
+  )
+}
+
 // Settings writes — used by /tickets settings modal. The category list
 // is no longer JSON-on-a-key; admins manage it via the web UI. The modal
 // here only writes the few business-level columns the bot still owns.

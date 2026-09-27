@@ -10,6 +10,8 @@ import {
   getCategoryId,
   getPanelCategories,
   getStaffRoleIds,
+  PANEL_JSON_MAX,
+  panelCategoriesModalJson,
   updateBusinessSettings,
 } from '../../services/settingsService'
 import {
@@ -112,8 +114,8 @@ export async function handleSettingsButton(interaction: ButtonInteraction): Prom
     .setLabel('Panel categories JSON')
     .setStyle(TextInputStyle.Paragraph)
     .setRequired(true)
-    .setMaxLength(4000)
-    .setValue(JSON.stringify(panelCats, null, 2))
+    .setMaxLength(PANEL_JSON_MAX)
+    .setValue(panelCategoriesModalJson(panelCats))
 
   // TicketTool coexistence: watched category IDs (CSV) + command prefix. Empty
   // category list = feature off. Editing here mirrors the web settings card.
