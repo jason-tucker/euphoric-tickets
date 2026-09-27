@@ -4,8 +4,9 @@ import { and, eq } from 'drizzle-orm'
 import { db } from '../src/db/client'
 import { auditLogs, integrationOpenClaims, tickets } from '../src/db/schema'
 import { handleIntegrationOpen, handleWebhookEnsure } from '../src/services/integrationTickets'
+import { ensureTicketWebhook } from '../src/services/ticketService'
 import { createInternalServer } from '../src/bot/internalHttp'
-import { componentsJson, fakeClient, seedTeam, snow } from './fakes'
+import { componentsJson, fakeClient, seedTeam, snow, type FakeTextChannel, type FakeWebhook } from './fakes'
 import { ageClaim, getClaim, openBody, seedIntegration, stubFetch, ticketsForRef } from './helpers'
 
 const STAFF_ROLE = '200000000000000001'
@@ -332,6 +333,93 @@ describe('webhook/ensure', () => {
     expect(ch.webhooks).toHaveLength(1)
     const [t] = await db.select().from(tickets).where(eq(tickets.id, id))
     expect(t.discordWebhookUrl).toBe([...urls][0])
+  })
+
+  // Holds the first createWebhook call open (after the webhook exists on the
+  // channel) until release() — lets a test interleave other writers.
+  function holdFirstCreate(ch: FakeTextChannel) {
+    const orig = ch.createWebhook.bind(ch)
+    let release!: () => void
+    const gate = new Promise<void>((r) => (release = r))
+    const made: FakeWebhook[] = []
+    ch.createWebhook = async (o) => {
+      const wh = await orig(o)
+      made.push(wh)
+      if (made.length === 1) await gate
+      return wh
+    }
+    return { release, made }
+  }
+
+  async function openWithoutWebhook() {
+    const s = await setup()
+    const res = await handleIntegrationOpen(s.client, openBody({ integration: s.integration, business: s.business, category: s.category, openerDiscordId: s.opener.id }))
+    const id = res.body.ticketId as number
+    await db.update(tickets).set({ discordWebhookId: null, discordWebhookUrl: null }).where(eq(tickets.id, id))
+    const ch = s.guild.liveTextChannels()[0]
+    ch.webhooks.length = 0
+    return { s, id, ch }
+  }
+
+  it('serializes ensures per ticket: a second caller waits for the first and reuses its webhook', async () => {
+    const { id, ch } = await openWithoutWebhook()
+    const hold = holdFirstCreate(ch)
+    let fetches = 0
+    const origFetch = ch.fetchWebhooks.bind(ch)
+    ch.fetchWebhooks = async () => {
+      fetches++
+      return origFetch()
+    }
+
+    const a = ensureTicketWebhook(ch as any, id)
+    await vi.waitFor(() => expect(hold.made).toHaveLength(1))
+    let bDone = false
+    const b = ensureTicketWebhook(ch as any, id).then((u) => ((bDone = true), u))
+    await new Promise((r) => setTimeout(r, 200))
+    // B is parked on the advisory lock — it has not even listed webhooks, so it
+    // cannot pick up A's not-yet-persisted hook.
+    expect(fetches).toBe(1)
+    expect(bDone).toBe(false)
+
+    hold.release()
+    const [ua, ub] = await Promise.all([a, b])
+    const wh1 = hold.made[0]
+    expect(ua).toBe(wh1.url)
+    expect(ub).toBe(wh1.url)
+    expect(hold.made).toHaveLength(1)
+    expect(wh1.deleted).toBe(false)
+    expect(ch.webhooks).toEqual([wh1])
+    const [t] = await db.select().from(tickets).where(eq(tickets.id, id))
+    expect(t.discordWebhookId).toBe(wh1.id)
+    expect(t.discordWebhookUrl).toBe(wh1.url)
+  })
+
+  it('reuse-then-lose: a caller that loses the persist never deletes the webhook that was persisted', async () => {
+    const { id, ch } = await openWithoutWebhook()
+    const hold = holdFirstCreate(ch)
+    const a = ensureTicketWebhook(ch as any, id)
+    await vi.waitFor(() => expect(hold.made).toHaveLength(1))
+    const wh1 = hold.made[0]
+    // Another writer (outside the lock) reuses A's in-flight webhook and
+    // persists it first.
+    await db.update(tickets).set({ discordWebhookId: wh1.id, discordWebhookUrl: wh1.url }).where(eq(tickets.id, id))
+    hold.release()
+    expect(await a).toBe(wh1.url)
+    expect(wh1.deleted).toBe(false)
+    expect(ch.webhooks).toEqual([wh1])
+  })
+
+  it('a caller that loses the persist to a DIFFERENT webhook deletes its own', async () => {
+    const { id, ch } = await openWithoutWebhook()
+    const other = await ch.createWebhook({ name: 'someone-else' })
+    const hold = holdFirstCreate(ch)
+    const a = ensureTicketWebhook(ch as any, id)
+    await vi.waitFor(() => expect(hold.made).toHaveLength(1))
+    await db.update(tickets).set({ discordWebhookId: other.id, discordWebhookUrl: other.url }).where(eq(tickets.id, id))
+    hold.release()
+    expect(await a).toBe(other.url)
+    expect(hold.made[0].deleted).toBe(true)
+    expect(ch.webhooks).toEqual([other])
   })
 
   it('404s for a ticket of another business', async () => {

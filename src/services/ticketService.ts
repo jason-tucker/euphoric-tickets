@@ -375,44 +375,60 @@ export async function openTicket(opts: {
   return { ok: true, channel, ticket: row }
 }
 
+// Advisory-lock namespace for ensureTicketWebhook: the two-int4 key
+// (WEBHOOK_LOCK_NS, ticketId). 0x45545748 = 'ETWH'. Distinct from the web
+// dispatcher's (1163152177, 1) and the bot leader's single-bigint key.
+const WEBHOOK_LOCK_NS = 0x45545748
+
 // Integration API: make sure the ticket's channel has a webhook and it's
-// persisted on the ticket. Idempotent and race-safe — reuses a bot-owned
-// `ticket-<id>` webhook left by a crashed attempt, and persists with a
-// conditional UPDATE so two concurrent ensures never both win (the loser's
-// fresh webhook is deleted). Returns the persisted webhook URL.
+// persisted on the ticket. Idempotent and race-safe: callers for the same
+// ticket are SERIALIZED with pg_advisory_xact_lock(WEBHOOK_LOCK_NS, ticketId)
+// around read → fetch/create → persist, so only one of them ever creates a
+// webhook and the rest read the persisted URL once the lock is released (the
+// lock is DB-wide, so it also serializes across processes). A bot-owned
+// `ticket-<id>` webhook left by a crashed attempt is reused. Returns the
+// persisted webhook URL.
 export async function ensureTicketWebhook(channel: TextChannel, ticketId: number): Promise<string> {
-  const [current] = await db
-    .select({ url: tickets.discordWebhookUrl })
-    .from(tickets)
-    .where(eq(tickets.id, ticketId))
-    .limit(1)
-  if (current?.url) return current.url
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`select pg_advisory_xact_lock(${WEBHOOK_LOCK_NS}::int4, ${ticketId}::int4)`)
 
-  const name = `ticket-${ticketId}`
-  const botId = channel.client?.user?.id
-  const existing = await channel
-    .fetchWebhooks()
-    .then((hooks) => hooks.find((w) => w.name === name && Boolean(w.token) && (!botId || w.owner?.id === botId)))
-    .catch(() => undefined)
-  const created = !existing
-  const wh = existing ?? (await channel.createWebhook({ name }))
+    const [current] = await tx
+      .select({ url: tickets.discordWebhookUrl })
+      .from(tickets)
+      .where(eq(tickets.id, ticketId))
+      .limit(1)
+    if (current?.url) return current.url
 
-  const [won] = await db
-    .update(tickets)
-    .set({ discordWebhookId: wh.id, discordWebhookUrl: wh.url })
-    .where(and(eq(tickets.id, ticketId), isNull(tickets.discordWebhookUrl)))
-    .returning({ url: tickets.discordWebhookUrl })
-  if (won?.url) return won.url
+    const name = `ticket-${ticketId}`
+    const botId = channel.client?.user?.id
+    const existing = await channel
+      .fetchWebhooks()
+      .then((hooks) => hooks.find((w) => w.name === name && Boolean(w.token) && (!botId || w.owner?.id === botId)))
+      .catch(() => undefined)
+    const created = !existing
+    const wh = existing ?? (await channel.createWebhook({ name }))
 
-  // Lost the race — someone persisted another webhook first. Drop ours.
-  if (created) await wh.delete('Duplicate ticket webhook').catch(() => {})
-  const [after] = await db
-    .select({ url: tickets.discordWebhookUrl })
-    .from(tickets)
-    .where(eq(tickets.id, ticketId))
-    .limit(1)
-  if (!after?.url) throw new Error('ticket webhook vanished after concurrent ensure')
-  return after.url
+    const [won] = await tx
+      .update(tickets)
+      .set({ discordWebhookId: wh.id, discordWebhookUrl: wh.url })
+      .where(and(eq(tickets.id, ticketId), isNull(tickets.discordWebhookUrl)))
+      .returning({ url: tickets.discordWebhookUrl })
+    if (won?.url) return won.url
+
+    // Lost the persist anyway — only possible if something outside this lock
+    // wrote the URL meanwhile. Re-read FIRST and delete our webhook only when we
+    // created it AND the persisted one is a different webhook: the persisted
+    // one may be the very webhook we created (reused by that writer), and
+    // deleting it would leave the ticket pointing at a dead hook.
+    const [after] = await tx
+      .select({ id: tickets.discordWebhookId, url: tickets.discordWebhookUrl })
+      .from(tickets)
+      .where(eq(tickets.id, ticketId))
+      .limit(1)
+    if (created && after?.id !== wh.id) await wh.delete('Duplicate ticket webhook').catch(() => {})
+    if (!after?.url) throw new Error('ticket webhook vanished after concurrent ensure')
+    return after.url
+  })
 }
 
 export async function claimTicket(opts: {
