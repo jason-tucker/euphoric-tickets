@@ -108,9 +108,36 @@ export async function updateBusinessSettings(
   invalidateBusinessCache(guildId)
 }
 
-// Replace the bot's ticket categories for a guild with the given list.
-// Wipes and re-inserts in a single transaction — the panel JSON in the
-// settings modal is treated as the source of truth on submit.
+// Keys in `cats` that collide (case-insensitively) with one of the team's
+// integration_only categories. Those are created by sudo/seed for an
+// integration and are never editable from the settings modal, so a JSON edit
+// may not create a category with the same key.
+export async function findIntegrationOnlyKeyConflicts(
+  businessId: string,
+  cats: PanelCategory[],
+  q: Pick<typeof db, 'select'> = db,
+): Promise<string[]> {
+  const rows = await q
+    .select({ key: ticketCategories.key })
+    .from(ticketCategories)
+    .where(and(eq(ticketCategories.businessId, businessId), eq(ticketCategories.integrationOnly, true)))
+  const reserved = new Set(rows.map((r) => r.key.toLowerCase()))
+  return cats.map((c) => c.key).filter((k) => reserved.has(k.toLowerCase()))
+}
+
+export function integrationOnlyConflictMessage(keys: string[]): string {
+  return (
+    `Category key${keys.length === 1 ? '' : 's'} ${keys.map((k) => `\`${k}\``).join(', ')} ` +
+    `${keys.length === 1 ? 'is' : 'are'} reserved by an integration-only category and can't be used here. ` +
+    'Integration categories are managed on the web by a bot owner — pick a different key.'
+  )
+}
+
+// Replace the team's editable ticket categories with the given list. Wipes and
+// re-inserts in a single transaction — the panel JSON in the settings modal is
+// treated as the source of truth on submit. integration_only categories are
+// NOT part of that JSON (getPanelCategories hides them): they are preserved
+// untouched, and a submitted key that collides with one is refused.
 export async function replaceTicketCategories(
   guildId: string,
   cats: PanelCategory[],
@@ -123,9 +150,13 @@ export async function replaceTicketCategories(
       reason: 'This server is not configured as a team — create one at https://tickets.euphoric.fm/admin.',
     }
   }
-  await db.transaction(async (tx) => {
-    await tx.delete(ticketCategories).where(eq(ticketCategories.businessId, biz.id))
-    if (cats.length === 0) return
+  const conflicts = await db.transaction(async (tx) => {
+    const clash = await findIntegrationOnlyKeyConflicts(biz.id, cats, tx)
+    if (clash.length > 0) return clash
+    await tx
+      .delete(ticketCategories)
+      .where(and(eq(ticketCategories.businessId, biz.id), eq(ticketCategories.integrationOnly, false)))
+    if (cats.length === 0) return []
     await tx.insert(ticketCategories).values(
       cats.map((c, i) => ({
         businessId: biz.id,
@@ -136,7 +167,9 @@ export async function replaceTicketCategories(
         sortOrder: String(i),
       })),
     )
+    return []
   })
+  if (conflicts.length > 0) return { ok: false, reason: integrationOnlyConflictMessage(conflicts) }
   invalidateBusinessCache(guildId)
   return { ok: true }
 }
