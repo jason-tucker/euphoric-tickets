@@ -57,8 +57,14 @@ The **web** app runs `drizzle-kit push` on its own container start and is the
 single owner of the schema. This bot's `scripts/docker-entrypoint.sh` does
 **not** push — it only `exec node dist/index.js` (the push was removed in
 0.3.0 to avoid a race over the same tables). No `src/db/migrations/*.sql`
-files; no journal. The `db:*` scripts in `package.json` are for local/dev use
-only — never run `db:push` against the shared production database.
+files; no journal. `drizzle.config.ts` (and `drizzle.docker.config.cjs`)
+**refuse** `drizzle-kit push`/`migrate` unless `ALLOW_BOT_SCHEMA_PUSH=1`, which
+only `test/globalSetup.ts` sets for the throwaway test database, and their
+`tablesFilter` hides the web-only tables (`integration_audit`,
+`integration_deliveries`, `integration_ticket_state`,
+`integration_webhook_allowlist`) so even an allowed push can never drop them.
+When the web adds a column to a mirrored table, mirror it here exactly
+(e.g. `businesses.staff_role_ids`) or a bot push would drop it.
 
 ---
 
@@ -296,12 +302,28 @@ Current endpoints:
 - `POST /api/internal/tickettool/reprocess-embeds` — re-pull embed text for already-ingested tickets.
 - `POST /api/internal/guild/leave` — make the bot leave a guild (team DB rows are left intact).
 - `POST /api/internal/bot/username` — set the bot's global Discord username.
-- `POST /api/internal/tickets/open` — **Integration API**: open a ticket for `openerDiscordId` on behalf of an integration (`src/services/integrationTickets.ts`). Business by id, idempotent on `(integrationId, externalRef)` via `integration_open_claims`; `201/200 {ticketId, channelId, created}` · `404 opener_not_member` · `403 opener_pending|category_forbidden` · `409 opening_in_progress` · `503 guild_unavailable`.
-- `POST /api/internal/tickets/close` — **Integration API**: close a ticket (`{ticketId, businessId, actorDiscordId?, reason?}`); the closer is the actor if staff for the category, else the bot. `200 {closed:true}` · `409 already_closed` · `404`.
-- `POST /api/internal/tickets/webhook/ensure` — **Integration API**: create/persist the ticket channel's webhook (`200 {webhookUrl}`).
+- `POST /api/internal/tickets/open` — **Integration API**: open a ticket for `openerDiscordId` on behalf of an integration (`src/services/integrationTickets.ts`).
+- `POST /api/internal/tickets/close` — **Integration API**: close a ticket.
+- `POST /api/internal/tickets/webhook/ensure` — **Integration API**: create/persist the ticket channel's webhook.
+
+**Integration route contract** (bodies are JSON, errors are `{error:'<code>'}`; body cap 16 000 **bytes**, decoded once as UTF-8):
+
+| Route | Body | Responses |
+|---|---|---|
+| `open` | `{integrationId, integrationSlug, integrationName, businessId, categoryKey, openerDiscordId, subject, card, externalRef}` — `subject` 1–100 chars, stored **trimmed** (blank → 400); `card.link.url` ≤ **512** chars | `201 {ticketId, channelId, created:true}` · `200 {…, created:false}` (adopt) · `400 validation` · `403 integration_forbidden` · `403 category_forbidden` (not in `allowed_category_keys`, unknown, staff-only, TicketTool team, or `allow_role_ids`) · `403 opener_pending` · `404 opener_not_member` · `404 business_not_found` · `409 opening_in_progress` · `409 ticket_channel_missing` `{ticketId}` (adopted ticket's channel was nulled by cleanup/resync) · `503 guild_unavailable` · `500 insert_failed / internal_error` |
+| `close` | `{ticketId, businessId, integrationId, actorDiscordId?, reason?}` — `integrationId` **required** | `200 {closed:true, closedBy:'actor'\|'bot'}` · `400 validation` · `403 integration_forbidden` · `404 not_found` (unknown ticket, other business, or not owned by that integration) · `409 already_closed` · `503 guild_unavailable` (bot not in guild, or a non-10003 channel-lookup error — row untouched, retry) |
+| `webhook/ensure` | `{ticketId, businessId, integrationId}` — `integrationId` **required** | `200 {webhookUrl}` · `400 validation` · `403 integration_forbidden` · `404 not_found` · `404 channel_not_found` (10003 / non-text) · `503 guild_unavailable` (transient lookup error) |
+
+Rules:
+- **Binding (defense in depth).** Every route re-reads the mirrored `integrations` row: it must exist, be `enabled` and have `business_id = businessId` (else `403 integration_forbidden`). `open` also requires `categoryKey ∈ allowed_category_keys`; `close`/`ensure` require `tickets.integration_id = integrationId`.
+- **Close actor.** The closer is the actor only when they hold a role in category `staff_role_ids` ∪ `businesses.staff_role_ids` ∪ `businesses.admin_role_ids` (`integrationActorStaffRoleIds` — role-based only, **no** Manage Server / Administrator / sudo, pending members never; identical to the web's `checkActor`). Otherwise the bot closes, and `closedBy:'bot'` says so. Human Discord flows keep `isStaffForCategory`.
+- **Channel lookups** are strict (`lookupTextChannel`): only Discord `10003 Unknown Channel` or a non-text channel counts as gone; `50001`, 5xx and network errors are transient (`503`, nothing changed).
+- **Webhook ensure** is serialized per ticket with `pg_advisory_xact_lock(0x45545748, ticketId)`; the fallback path never deletes a webhook that ended up persisted.
+- **Welcome card limits.** Link-button URLs over 512 chars (after normalisation) are dropped; header + template + card body are budgeted to Discord's 4000-char total text cap (card truncated with `…`). If the welcome send is still rejected on an integration open, it is retried once without the card link, and the audit / log / notify run regardless.
+- **Markdown.** `subject`, `card.title`, `card.lines` and the close `reason` arrive already escaped by the web (`escapeDiscordMarkdown` at `/api/v1`); the bot renders them verbatim and must never escape them again.
 
 `integration_only` categories (`ticket_categories.integration_only`) can only be opened through the Integration API: `openTicket` refuses them for any other source (panel buttons, including stale panels), panels never render them, and `/tickets convert` refuses them.
 
 The reverse direction — bot → web — is handled by `src/services/notifyBridge.ts`: `dispatchNotify()` POSTs to the web's `/api/internal/notify` (on `WEB_INTERNAL_URL`, falling back to `WEB_BASE_URL`) after Discord-origin ticket events (new ticket, new message relay) so the web can fan out browser and push notifications.
 
-**Schema ownership reminder.** The web companion (`euphoric-tickets-web`) runs `drizzle-kit push` on its own container start and is the **single owner of the schema**. This bot mirrors `src/db/schema/*.ts` from the web repo and must never push — its `docker-entrypoint.sh` only runs `exec node dist/index.js`. The `db:generate` and `db:push` scripts in `package.json` are for local/dev use only. Cross-reference: [`euphoric-tickets-web`](https://github.com/jason-tucker/euphoric-tickets-web).
+**Schema ownership reminder.** The web companion (`euphoric-tickets-web`) runs `drizzle-kit push` on its own container start and is the **single owner of the schema**. This bot mirrors `src/db/schema/*.ts` from the web repo and must never push — its `docker-entrypoint.sh` only runs `exec node dist/index.js`, and the drizzle configs refuse a push without `ALLOW_BOT_SCHEMA_PUSH=1` (throwaway test DB only). Cross-reference: [`euphoric-tickets-web`](https://github.com/jason-tucker/euphoric-tickets-web).
