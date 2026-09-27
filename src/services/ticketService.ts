@@ -240,6 +240,8 @@ export async function openTicket(opts: {
       )
   }
 
+  // Integration opens: `subject` and `card` arrive already markdown-escaped by
+  // the web (see integrationTickets.ts header); rendered as-is, never re-escaped.
   const subject = truncate(opts.subject?.trim() || `${categoryKey} from ${opener.user.username}`, 120)
   const card = opts.card ?? null
   let row: Ticket
@@ -578,7 +580,8 @@ export async function closeTicket(opts: {
   // several teams, so callers that know it (the integration close route, the
   // close-confirm button) pass it; otherwise it falls back to the guild default.
   business?: ResolvedBusiness | null
-  // Optional close reason, included in the opener DM.
+  // Optional close reason, included in the opener DM. From the Integration API
+  // it is already markdown-escaped by the web — used as-is, never re-escaped.
   reason?: string
   // Audit attribution; defaults to the bot.
   via?: string

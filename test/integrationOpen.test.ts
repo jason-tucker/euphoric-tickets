@@ -8,7 +8,7 @@ import { handleIntegrationOpen, handleWebhookEnsure } from '../src/services/inte
 import { ensureTicketWebhook } from '../src/services/ticketService'
 import { safeLinkUrl } from '../src/services/ticketRenderer'
 import { createInternalServer } from '../src/bot/internalHttp'
-import { componentsJson, fakeClient, seedTeam, snow, type FakeTextChannel, type FakeWebhook } from './fakes'
+import { componentsJson, fakeClient, seedTeam, snow, textDisplays, type FakeTextChannel, type FakeWebhook } from './fakes'
 import { ageClaim, getClaim, openBody, seedIntegration, stubFetch, ticketsForRef } from './helpers'
 
 const STAFF_ROLE = '200000000000000001'
@@ -86,6 +86,27 @@ describe('POST /api/internal/tickets/open — happy path', () => {
     await vi.waitFor(() => expect(fetchStub.calls).toHaveLength(1))
     expect(fetchStub.calls[0].url).toBe('http://tickets-web:3000/api/internal/notify')
     expect(fetchStub.calls[0].body).toMatchObject({ event: 'new_ticket', ticketId: t.id, slug: s.business.slug })
+  })
+
+  it('markdown: already-escaped subject/card fields (the web escapes them) render verbatim — never double-escaped', async () => {
+    const s = await setup()
+    const escaped = '\\[Approve batch\\](https://evil.example/login) \\*\\*x\\*\\*'
+    const res = await handleIntegrationOpen(
+      s.client,
+      openBody({
+        integration: s.integration,
+        business: s.business,
+        category: s.category,
+        openerDiscordId: s.opener.id,
+        subject: 'Batch \\*12\\*',
+        card: { title: `Title ${escaped}`, lines: [escaped], link: null },
+      }),
+    )
+    expect(res.status).toBe(201)
+    const texts = textDisplays(s.guild.liveTextChannels()[0].sent[1])
+    expect(texts[1]).toBe(`### Title ${escaped}\n${escaped}`)
+    const [t] = await db.select().from(tickets).where(eq(tickets.id, res.body.ticketId as number))
+    expect(t.subject).toBe('Batch \\*12\\*')
   })
 
   it('lets the same opener hold 2 open integration tickets in one category', async () => {

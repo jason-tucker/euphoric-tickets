@@ -262,5 +262,12 @@ describe('POST /api/internal/tickets/close', () => {
     const [t] = await db.select().from(tickets).where(eq(tickets.id, s.ticketId))
     expect(t.status).toBe('closed')
   })
+
+  it('markdown: an already-escaped reason (the web escapes it) reaches the DM verbatim — never double-escaped', async () => {
+    const s = await openIntegrationTicket()
+    const reason = '\\[Approve\\](https://evil.example) \\*\\*done\\*\\*'
+    await handleIntegrationClose(s.client, { ticketId: s.ticketId, businessId: s.second.business.id, integrationId: s.integration.id, reason })
+    expect(s.opener.sentDMs[0].content).toContain(`Reason: ${reason}`)
+  })
 })
 
