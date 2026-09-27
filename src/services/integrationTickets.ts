@@ -17,6 +17,7 @@ import { integrationOpenClaims } from '../db/schema/integrationOpenClaims'
 import { integrations } from '../db/schema/integrations'
 import { closeTicket, ensureTicketWebhook, openTicket, type IntegrationIdentity } from './ticketService'
 import { isIntegrationActorStaff } from './permissions'
+import { LINK_URL_MAX } from './ticketRenderer'
 import { getOrCreateUserByDiscordId } from './userResolver'
 import { writeAudit } from './audit'
 import { log } from './logger'
@@ -48,7 +49,8 @@ function parseCard(v: unknown): IntegrationCard | null | undefined {
   let link: IntegrationCard['link'] = null
   if (c.link !== undefined && c.link !== null) {
     const l = c.link as Record<string, unknown>
-    if (typeof l !== 'object' || !str(l.label, 40) || !str(l.url, 2000)) return undefined
+    // Discord rejects link-button URLs over 512 chars (50035) — refuse up front.
+    if (typeof l !== 'object' || !str(l.label, 40) || !str(l.url, LINK_URL_MAX)) return undefined
     link = { label: l.label, url: l.url }
   }
   return { title: c.title, lines: lines as string[], link }

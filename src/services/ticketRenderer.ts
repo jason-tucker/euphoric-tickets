@@ -168,13 +168,19 @@ function renderCardBody(card: IntegrationCard): string {
   return text.length > CARD_BODY_MAX ? text.slice(0, CARD_BODY_MAX - 1) + '…' : text
 }
 
-// Link buttons reject anything but http(s); a bad URL would fail the whole
-// card send, so drop the button instead. (The web already enforces the
-// integration's link_origin.)
-function safeLinkUrl(url: string): string | null {
+// Discord's maximum link-button URL length.
+export const LINK_URL_MAX = 512
+
+// Link buttons reject anything but http(s) and anything over 512 chars; a bad
+// URL would fail the whole card send, so drop the button instead. The length
+// is checked AFTER normalisation — new URL() can lengthen a URL (percent-
+// encoding). (The web already enforces the integration's link_origin.)
+export function safeLinkUrl(url: string): string | null {
   try {
     const u = new URL(url)
-    return u.protocol === 'https:' || u.protocol === 'http:' ? u.toString() : null
+    if (u.protocol !== 'https:' && u.protocol !== 'http:') return null
+    const out = u.toString()
+    return out.length <= LINK_URL_MAX ? out : null
   } catch {
     return null
   }

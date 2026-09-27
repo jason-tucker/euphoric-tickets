@@ -5,6 +5,7 @@ import { db } from '../src/db/client'
 import { auditLogs, integrationOpenClaims, tickets } from '../src/db/schema'
 import { handleIntegrationOpen, handleWebhookEnsure } from '../src/services/integrationTickets'
 import { ensureTicketWebhook } from '../src/services/ticketService'
+import { safeLinkUrl } from '../src/services/ticketRenderer'
 import { createInternalServer } from '../src/bot/internalHttp'
 import { componentsJson, fakeClient, seedTeam, snow, type FakeTextChannel, type FakeWebhook } from './fakes'
 import { ageClaim, getClaim, openBody, seedIntegration, stubFetch, ticketsForRef } from './helpers'
@@ -526,5 +527,67 @@ describe('internal HTTP bridge', () => {
     } finally {
       await new Promise<void>((r) => server.close(() => r()))
     }
+  })
+})
+
+describe('card link URL — Discord 512-char link-button limit', () => {
+  const urlOfLength = (n: number) => {
+    const base = 'https://music.euphoric.fm/b/'
+    return base + 'x'.repeat(n - base.length)
+  }
+  const cardWith = (url: string) => ({ title: 'Batch', lines: ['a'], link: { label: 'Open in portal', url } })
+
+  it('route validation caps card.link.url at 512 (the fake channel enforces Discord limits)', async () => {
+    const s = await setup()
+    const base = openBody({ integration: s.integration, business: s.business, category: s.category, openerDiscordId: s.opener.id })
+    expect(await handleIntegrationOpen(s.client, { ...base, card: cardWith(urlOfLength(513)) })).toEqual({
+      status: 400,
+      body: { error: 'validation' },
+    })
+    const ok = await handleIntegrationOpen(s.client, { ...base, card: cardWith(urlOfLength(512)) })
+    expect(ok.status).toBe(201)
+    const ch = s.guild.liveTextChannels()[0]
+    expect(componentsJson(ch.sent[1])).toContain(urlOfLength(512))
+  })
+
+  it('safeLinkUrl drops a URL whose NORMALISED form exceeds 512', () => {
+    const raw = 'https://music.euphoric.fm/b/' + 'é'.repeat(100) // 128 chars raw, 628 once %C3%A9-encoded
+    expect(raw.length).toBeLessThanOrEqual(512)
+    expect(new URL(raw).toString().length).toBeGreaterThan(512)
+    expect(safeLinkUrl(raw)).toBeNull()
+    expect(safeLinkUrl(urlOfLength(512))).toBe(urlOfLength(512))
+    expect(safeLinkUrl('javascript:alert(1)')).toBeNull()
+  })
+
+  it('a rejected welcome card is retried once without the card link; audit, log and notify still run', async () => {
+    const s = await setup()
+    const url = 'https://music.euphoric.fm/batches/rejected'
+    // Discord rejects the card link for a reason the bot cannot predict.
+    const origCreate = s.guild.channels.create
+    s.guild.channels.create = async (o) => {
+      const ch = await origCreate(o)
+      const send = ch.send.bind(ch)
+      ch.send = async (p) => {
+        if (typeof p !== 'string' && componentsJson(p).includes(url)) {
+          throw Object.assign(new Error('Invalid Form Body'), { code: 50035 })
+        }
+        return send(p)
+      }
+      return ch
+    }
+    const body = openBody({ integration: s.integration, business: s.business, category: s.category, openerDiscordId: s.opener.id, card: cardWith(url) })
+    const res = await handleIntegrationOpen(s.client, body)
+    expect(res.status).toBe(201)
+    const ch = s.guild.liveTextChannels()[0]
+    expect(ch.sent).toHaveLength(2) // ping + the retried card
+    const card = componentsJson(ch.sent[1])
+    expect(card).toContain('Batch')
+    expect(card).toContain(`tk:claim:${res.body.ticketId}`)
+    expect(card).toContain(`/tickets/${res.body.ticketId}`) // Open in web survives
+    expect(card).not.toContain(url)
+    const audits = await db.select().from(auditLogs).where(eq(auditLogs.ticketId, res.body.ticketId as number))
+    expect(audits.map((a) => a.action)).toEqual(['opened'])
+    await vi.waitFor(() => expect(fetchStub.calls.some((c) => (c.body as any)?.event === 'new_ticket')).toBe(true))
+    expect((await getClaim(s.integration.id, body.externalRef)).state).toBe('open')
   })
 })

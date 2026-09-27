@@ -11,6 +11,43 @@ export const BOT_ID = '100000000000000009'
 
 export type Sent = { content?: string; components?: { toJSON(): unknown }[]; [k: string]: unknown }
 
+type Json = { type?: number; url?: string; content?: string; components?: Json[]; accessory?: Json }
+
+function walk(c: Json, f: (c: Json) => void): void {
+  f(c)
+  for (const x of c.components ?? []) walk(x, f)
+  if (c.accessory) walk(c.accessory, f)
+}
+
+// Discord's documented message limits that the ticket code can hit: a link
+// button URL is at most 512 chars, and a Components V2 message carries at most
+// 4000 chars of text across ALL its Text Displays. Violations throw the same
+// 50035 Invalid Form Body that the real API returns.
+export function assertDiscordLimits(payload: Sent): void {
+  let text = 0
+  for (const top of payload.components ?? []) {
+    const json = (typeof top.toJSON === 'function' ? top.toJSON() : top) as Json
+    walk(json, (c) => {
+      if (c.type === 2 && typeof c.url === 'string' && c.url.length > 512) {
+        throw Object.assign(new Error('Invalid Form Body: url must be 512 or fewer in length'), { code: 50035 })
+      }
+      if (c.type === 10 && typeof c.content === 'string') text += c.content.length
+    })
+  }
+  if (text > 4000) throw Object.assign(new Error(`Invalid Form Body: total text ${text} > 4000`), { code: 50035 })
+}
+
+// All Text Display contents of a sent payload, in order.
+export function textDisplays(payload: Sent | undefined): string[] {
+  const out: string[] = []
+  for (const top of payload?.components ?? []) {
+    walk((typeof top.toJSON === 'function' ? top.toJSON() : top) as Json, (c) => {
+      if (c.type === 10 && typeof c.content === 'string') out.push(c.content)
+    })
+  }
+  return out
+}
+
 export class FakeWebhook {
   deleted = false
   owner = { id: BOT_ID }
@@ -51,6 +88,7 @@ export class FakeTextChannel {
     return true
   }
   async send(payload: Sent | string): Promise<{ id: string }> {
+    if (typeof payload !== 'string') assertDiscordLimits(payload)
     this.sent.push(typeof payload === 'string' ? { content: payload } : payload)
     return { id: snow() }
   }

@@ -304,19 +304,20 @@ export async function openTicket(opts: {
       })
     : null
 
-  const welcome = buildTicketWelcome({
-    ticketId: row.id,
-    openerId: opener.id,
-    categoryLabel: cat.label,
-    categoryEmoji: cat.emoji,
-    subject,
-    openedAt: row.openedAt,
-    staffRoleIds,
-    claimerId: null,
-    firstMessage,
-    webUrl: `${env.WEB_BASE_URL}/b/${business.slug}/tickets/${row.id}`,
-    card,
-  })
+  const welcomeFor = (c: IntegrationCard | null) =>
+    buildTicketWelcome({
+      ticketId: row.id,
+      openerId: opener.id,
+      categoryLabel: cat.label,
+      categoryEmoji: cat.emoji,
+      subject,
+      openedAt: row.openedAt,
+      staffRoleIds,
+      claimerId: null,
+      firstMessage,
+      webUrl: `${env.WEB_BASE_URL}/b/${business.slug}/tickets/${row.id}`,
+      card: c,
+    })
 
   const pingContent = staffRoleIds.length
     ? `<@${opener.id}> ${staffRoleIds.map((id) => `<@&${id}>`).join(' ')}`
@@ -326,7 +327,30 @@ export async function openTicket(opts: {
     allowedMentions: { users: [opener.id], roles: staffRoleIds },
   })
   // parse:[] so the card body's {{user}} mention renders without re-pinging.
-  await channel.send({ ...(welcome as any), allowedMentions: { parse: [] } })
+  const sendWelcome = (c: IntegrationCard | null) =>
+    channel.send({ ...(welcomeFor(c) as any), allowedMentions: { parse: [] } })
+  if (!isIntegration) {
+    await sendWelcome(card)
+  } else {
+    // Integration opens: the ticket row already exists, so a rejected card
+    // must not abort the open (no buttons, no audit, no notify, and the web's
+    // retry would just adopt the half-open ticket). The integration-supplied
+    // link button is the likeliest culprit — retry ONCE without it; if that
+    // fails too, log and carry on so the audit/log/notify below still run.
+    try {
+      await sendWelcome(card)
+    } catch (err) {
+      log.warn('integration open: welcome card rejected — retrying without the card link', {
+        ticketId: row.id,
+        err: String(err),
+      })
+      try {
+        await sendWelcome(card ? { ...card, link: null } : null)
+      } catch (err2) {
+        log.error('integration open: welcome card send failed twice', { ticketId: row.id, err: String(err2) })
+      }
+    }
+  }
 
   void logTicketEvent({
     guild,
