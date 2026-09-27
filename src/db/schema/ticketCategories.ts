@@ -50,6 +50,12 @@ export const ticketCategories = pgTable(
     // the new ticket row with the category's kind. Mirrors the web schema.
     kind: text('kind', { enum: ['normal', 'project'] as const }).notNull().default('normal'),
 
+    // Integration API (v0.8.0): only an integration may open tickets in this
+    // category. The bot's openTicket() refuses it for every other source (panel
+    // buttons — including stale panels — and slash paths); panels never render
+    // a button for it. Mirrors euphoric-tickets-web.
+    integrationOnly: boolean('integration_only').notNull().default(false),
+
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({ businessKey: uniqueIndex('ticket_categories_business_key_uq').on(t.businessId, t.key) }),

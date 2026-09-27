@@ -1,4 +1,4 @@
-import { boolean, index, integer, pgTable, serial, text, timestamp, uuid } from 'drizzle-orm/pg-core'
+import { boolean, index, integer, jsonb, pgTable, serial, text, timestamp, uniqueIndex, uuid } from 'drizzle-orm/pg-core'
 import { businesses } from './businesses'
 import { ticketCategories } from './ticketCategories'
 import { users } from './users'
@@ -16,6 +16,15 @@ export const ticketStatuses = [
   'closed',
 ] as const
 export type TicketStatus = (typeof ticketStatuses)[number]
+
+// Integration API (v0.8.0): the rich card an external integration (e.g. the
+// EFM Music Portal) supplies on open. Persisted on the ticket so the welcome
+// card re-renders identically after a Claim. Mirrors euphoric-tickets-web.
+export type IntegrationCard = {
+  title: string
+  lines: string[]
+  link?: { label: string; url: string } | null
+}
 
 export const ticketKinds = ['normal', 'project'] as const
 export type TicketKind = (typeof ticketKinds)[number]
@@ -58,6 +67,15 @@ export const tickets = pgTable(
     externalSource: text('external_source').notNull().default('euphoric'),
     externalTranscriptUrl: text('external_transcript_url'),
 
+    // Integration API (v0.8.0). Set only on tickets opened through the web's
+    // /api/v1/tickets → the bot's /api/internal/tickets/open route. The
+    // integration's own reference (e.g. a portal batch id) is unique per
+    // integration; NULLs are distinct, so ordinary tickets never collide.
+    // external_source stays 'euphoric' for these. Mirrors euphoric-tickets-web.
+    integrationId: uuid('integration_id'),
+    externalRef: text('external_ref'),
+    integrationCard: jsonb('integration_card').$type<IntegrationCard>(),
+
     openedAt: timestamp('opened_at', { withTimezone: true }).notNull().defaultNow(),
     closedAt: timestamp('closed_at', { withTimezone: true }),
     closedByUserId: uuid('closed_by_user_id').references(() => users.id),
@@ -73,6 +91,7 @@ export const tickets = pgTable(
     byDiscordChannel: index('tickets_discord_channel_idx').on(t.discordChannelId),
     byInternalThread: index('tickets_internal_thread_idx').on(t.discordInternalThreadId),
     byParent: index('tickets_parent_idx').on(t.parentTicketId),
+    byIntegrationRef: uniqueIndex('tickets_integration_external_ref_uq').on(t.integrationId, t.externalRef),
   }),
 )
 
