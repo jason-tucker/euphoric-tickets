@@ -229,7 +229,7 @@ export async function seedTeam(opts: {
   slug?: string
   adminRoleIds?: string[]
   staffRoleIds?: string[]
-  category?: Partial<Pick<TicketCategory, 'key' | 'label' | 'staffRoleIds' | 'integrationOnly' | 'allowRoleIds' | 'staffOnly'>>
+  category?: Partial<Pick<TicketCategory, 'key' | 'label' | 'staffRoleIds' | 'integrationOnly' | 'allowRoleIds' | 'staffOnly' | 'pingStaffOnOpen'>>
 } = {}): Promise<{ guild: FakeGuild; business: Business; category: TicketCategory; parentId: string }> {
   const guild = opts.guild ?? new FakeGuild()
   const parentId = guild.addCategory()
@@ -254,6 +254,7 @@ export async function seedTeam(opts: {
       allowRoleIds: opts.category?.allowRoleIds ?? '',
       integrationOnly: opts.category?.integrationOnly ?? false,
       staffOnly: opts.category?.staffOnly ?? false,
+      pingStaffOnOpen: opts.category?.pingStaffOnOpen ?? true,
     })
     .returning()
   return { guild, business, category, parentId }

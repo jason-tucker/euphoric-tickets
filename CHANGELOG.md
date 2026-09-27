@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.8.3] — 2026-09-27 — Per-category "ping staff roles when a ticket opens"
+
+**Deploy after web v0.12.3.** The web owns the schema and adds `ticket_categories.ping_staff_on_open`; this bot selects whole category rows, so it would fail on a database without the column.
+
+### Added
+- **`ticket_categories.ping_staff_on_open`** (boolean, not null, default `true`) mirrored in `src/db/schema/ticketCategories.ts`.
+- **Quiet opens.** When a category's `ping_staff_on_open` is `false`, `openTicket()` (`src/services/ticketService.ts`) sends only `<@opener>` with `allowedMentions { users: [opener], roles: [] }`. Staff roles still get their channel overwrites exactly as before, and the welcome card is unchanged (it already pings nobody). This covers every open path through `openTicket()`: panel buttons and Integration API opens (e.g. the EFM Music Portal's `newsong` / `songedit` / `songremoval`). Every existing category keeps the default `true`, so nothing changes until a category is switched off.
+- **Settings-modal JSON** shows `"pingStaffOnOpen": true|false` per category and accepts edits to it. A non-boolean value is refused. When the key is omitted, a re-submitted category keeps its previous value (so older modals or trimmed JSON never re-enable staff pings) and a new category gets `true`. `integration_only` categories stay outside the JSON and are preserved untouched, including this field (vault Open Issues `^tickets-settings-modal-category-wipe`: not regressed; the wider delete-and-reinsert issue is still open).
+
+### Tests
+- 99 tests (was 91). New `test/pingStaffOnOpen.test.ts`: the default still pings the opener and the staff roles; `false` pings only the opener on a panel open and on an Integration API open, keeps the staff overwrite, and no open-flow message mentions a role; the JSON shows the value, validation accepts booleans and refuses anything else, a shown-JSON round trip keeps each value, an omitted field keeps the old value, a new key defaults to `true`, and an `integration_only` category with `false` survives a full modal save byte for byte.
+
 ## [0.8.2] — 2026-09-27 — INTERNAL_TOKEN is required; no bot-token fallback
 
 Plan step P1c (vault "EFM Music Portal — Plan" §4.6 step 5). **Deploy after web v0.12.2**, with the same `INTERNAL_TOKEN` (≥ 32 characters) set in both services.
