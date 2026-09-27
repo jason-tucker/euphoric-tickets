@@ -14,7 +14,8 @@ export function dispatchNotify(payload: {
   slug: string
   actorUserId?: string | null
 }): void {
-  const secret = env.INTERNAL_TOKEN ?? env.DISCORD_BOT_TOKEN
+  // P1c: the dedicated INTERNAL_TOKEN only — never the bot token.
+  const secret = env.INTERNAL_TOKEN
   // Server-to-server: prefer the private-network URL so the notify POST stays
   // on the Docker network. WEB_BASE_URL (public) remains the fallback.
   const base = (env.WEB_INTERNAL_URL ?? env.WEB_BASE_URL).replace(/\/+$/, '')

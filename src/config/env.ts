@@ -30,7 +30,13 @@ const csvSnowflakes = z
     { message: 'each entry must be a Discord snowflake' },
   )
 
-const envSchema = z.object({
+// P1c (plan §4.6 step 5): the web↔bot internal channel authenticates ONLY with
+// a dedicated INTERNAL_TOKEN of at least this many characters. There is no
+// DISCORD_BOT_TOKEN fallback; a missing or short token fails env validation and
+// the process exits at boot.
+export const INTERNAL_TOKEN_MIN_LENGTH = 32
+
+export const envSchema = z.object({
   DISCORD_BOT_TOKEN: z.string().min(1, 'DISCORD_BOT_TOKEN is required'),
   DISCORD_CLIENT_ID: z.string().regex(SNOWFLAKE_RE, 'must be a Discord snowflake'),
   GUILD_ID: z.string().regex(SNOWFLAKE_RE, 'must be a Discord snowflake'),
@@ -48,10 +54,12 @@ const envSchema = z.object({
   // never leave the Docker network or depend on the public edge. Links shown to
   // humans keep using WEB_BASE_URL. Unset = fall back to WEB_BASE_URL.
   WEB_INTERNAL_URL: z.string().url().optional(),
-  // P13: shared secret authenticating the web ↔ bot internal endpoints
-  // (web → bot DM dispatch, bot → web notify dispatch). Optional: when unset,
-  // those endpoints are disabled and notifications degrade gracefully.
-  INTERNAL_TOKEN: z.string().min(8).optional(),
+  // P13 / P1c: shared secret authenticating every web ↔ bot internal call
+  // (x-internal-token on the internal HTTP server and the notify bridge).
+  // Required, ≥ 32 characters, same value as the web app's. Never the bot token.
+  INTERNAL_TOKEN: z
+    .string({ error: 'INTERNAL_TOKEN is required (a dedicated secret shared with the web app; openssl rand -hex 32)' })
+    .min(INTERNAL_TOKEN_MIN_LENGTH, `INTERNAL_TOKEN must be at least ${INTERNAL_TOKEN_MIN_LENGTH} characters`),
   // Port the bot's tiny internal HTTP server binds (DM dispatch). Default 8787.
   INTERNAL_PORT: z.coerce.number().int().positive().default(8787),
 })

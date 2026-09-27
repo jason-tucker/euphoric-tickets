@@ -20,18 +20,14 @@ import {
 // (the bot holds the gateway connection). Authed by the shared INTERNAL_TOKEN.
 // Bound on INTERNAL_PORT — keep it on the private docker network, never
 // publish it to the host.
-// The internal endpoints authenticate with INTERNAL_TOKEN if set, otherwise
-// they fall back to the bot token (which both services already share) — so
-// notifications/DM work with no extra config out of the box.
-function internalSecret(): string {
-  return env.INTERNAL_TOKEN ?? env.DISCORD_BOT_TOKEN
-}
+// P1c: the internal endpoints authenticate with the dedicated INTERNAL_TOKEN
+// only. There is no DISCORD_BOT_TOKEN fallback: env validation (src/config/
+// env.ts) requires INTERNAL_TOKEN (≥ 32 characters) and exits at boot without it.
 
 // Constant-time comparison of the presented token against the shared secret.
-// A plain `!==` leaks how many leading bytes matched via response timing — a
-// timing oracle on a secret that may be the Discord bot token (see the
-// INTERNAL_TOKEN fallback above). Reject non-string / length-mismatched
-// headers before the compare so timingSafeEqual never throws.
+// A plain `!==` leaks how many leading bytes matched via response timing.
+// Reject non-string / length-mismatched headers before the compare so
+// timingSafeEqual never throws.
 function tokenMatches(presented: string | string[] | undefined, secret: string): boolean {
   if (typeof presented !== 'string') return false
   const a = Buffer.from(presented)
@@ -41,21 +37,6 @@ function tokenMatches(presented: string | string[] | undefined, secret: string):
 }
 
 export function startInternalHttp(client: Client): void {
-
-  // F1 (security review): when INTERNAL_TOKEN is unset the Discord bot token —
-  // the single most sensitive credential — doubles as the internal HTTP shared
-  // secret and is sent on the wire to the web (WEB_INTERNAL_URL, else
-  // WEB_BASE_URL) by notifyBridge. That works
-  // out of the box but reuses the bot token as an auth secret. Warn loudly so
-  // operators set a dedicated INTERNAL_TOKEN (the same value on the web side).
-  if (!env.INTERNAL_TOKEN) {
-    log.warn(
-      'INTERNAL_TOKEN is not set — internal endpoints and the notify bridge are ' +
-        'authenticating with the Discord bot token as a fallback. Set a dedicated ' +
-        'INTERNAL_TOKEN (matching the web app) to avoid reusing the bot token as an HTTP secret.',
-    )
-  }
-
   const server = createInternalServer(client)
   server.listen(env.INTERNAL_PORT, () => {
     log.info(`internal HTTP listening on :${env.INTERNAL_PORT}`)
@@ -77,7 +58,7 @@ export const MAX_BODY_BYTES = 16_000
 // Builds (does not bind) the internal server. Split from startInternalHttp so
 // tests can listen on an ephemeral port.
 export function createInternalServer(client: Client): http.Server {
-  const secret = internalSecret()
+  const secret = env.INTERNAL_TOKEN
 
   const ROUTES = new Set([
     '/api/internal/dm',
