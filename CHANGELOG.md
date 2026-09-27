@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.1] — 2026-09-27 — Integration API follow-ups
+
+### Fixed
+- **Integration identity on open.** `POST /api/internal/tickets/open` took the integration's slug and name from the request body (`integrationSlug` / `integrationName`). They now come from the bound `integrations` row (`loadBoundIntegration` selects `name` too); the request values are still validated but ignored, so the `integration:<slug>` audit can't be spoofed with a valid internal token.
+- **Schema push guard.** Both `drizzle.config.ts` and `drizzle.docker.config.cjs` only checked the first non-flag argument, so `drizzle-kit --config <file> push` slipped past. `push` or `migrate` anywhere in argv is now refused unless `ALLOW_BOT_SCHEMA_PUSH=1` (`test/drizzleGuard.test.ts` loads each config with synthetic argv).
+- **Welcome-card claimer reserve.** `CLAIM_SUFFIX_RESERVE` was 64; it is now the true maximum of ` · claimed by <@` + 20 digits + `>` = 37, so non-integration templates are no longer clipped 27 characters early.
+
 ## [0.8.0] — 2026-09-26 — Integration API (bot half): internal open/close/webhook routes, integration_only, Claim/Close parity
 
 ### Added

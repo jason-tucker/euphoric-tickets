@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { eq } from 'drizzle-orm'
 import { db } from '../src/db/client'
 import { ticketCategories } from '../src/db/schema'
-import { buildTicketWelcome, TOTAL_TEXT_MAX } from '../src/services/ticketRenderer'
+import { buildTicketWelcome, CLAIM_SUFFIX_RESERVE, TOTAL_TEXT_MAX } from '../src/services/ticketRenderer'
 import { handleIntegrationOpen } from '../src/services/integrationTickets'
 import { handleTicketClaim } from '../src/interactions/buttons/ticketClaim'
 import { assertDiscordLimits, fakeClient, seedTeam, textDisplays } from './fakes'
@@ -59,6 +59,27 @@ describe('welcome card — Components V2 total text ≤ 4000', () => {
     const a = textDisplays(buildTicketWelcome({ ...base, claimerId: null, card: maxCard }) as never)
     const b = textDisplays(buildTicketWelcome({ ...base, claimerId: '100000000000000999', card: maxCard }) as never)
     expect(b[1]).toBe(a[1])
+  })
+
+  it('reserves exactly the maximum claimer suffix (37 chars): a clipped body fills the rest, a 20-digit claim hits 4000', () => {
+    expect(CLAIM_SUFFIX_RESERVE).toBe(37)
+    const maxClaimer = '18446744073709551615' // u64 max — the longest possible snowflake
+    expect(` · claimed by <@${maxClaimer}>`.length).toBe(CLAIM_SUFFIX_RESERVE)
+    const open = buildTicketWelcome({ ...base, claimerId: null, card: maxCard })
+    const claimed = buildTicketWelcome({ ...base, claimerId: maxClaimer, card: maxCard })
+    expect(total(open)).toBe(TOTAL_TEXT_MAX - CLAIM_SUFFIX_RESERVE)
+    expect(total(claimed)).toBe(TOTAL_TEXT_MAX)
+    expect(() => assertDiscordLimits(claimed as never)).not.toThrow()
+  })
+
+  it('a non-integration template that fits beside the header and the claimer reserve is not clipped', () => {
+    const header = textDisplays(buildTicketWelcome({ ...base, claimerId: null, firstMessage: 'x' }) as never)[0]
+    const room = TOTAL_TEXT_MAX - header.length - CLAIM_SUFFIX_RESERVE
+    const fits = 'M'.repeat(room)
+    expect(textDisplays(buildTicketWelcome({ ...base, claimerId: null, firstMessage: fits }) as never)[1]).toBe(fits)
+    const over = textDisplays(buildTicketWelcome({ ...base, claimerId: null, firstMessage: fits + 'M' }) as never)[1]
+    expect(over).toHaveLength(room)
+    expect(over.endsWith('…')).toBe(true)
   })
 
   it('a small card is left intact', () => {

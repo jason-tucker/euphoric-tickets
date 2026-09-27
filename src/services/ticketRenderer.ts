@@ -174,10 +174,12 @@ export function buildTicketWelcome(opts: {
 }
 
 // Discord: at most 4000 chars of text across all Text Displays of one
-// Components V2 message. The claimer suffix (` · claimed by <@snowflake>`,
-// ≤ 37 chars) is reserved up front.
+// Components V2 message. The claimer suffix (` · claimed by <@snowflake>`) is
+// reserved up front at its true maximum: a snowflake is a u64, so ≤ 20 digits
+// → 16 + 20 + 1 = 37 chars. Reserving more would clip templates needlessly.
 export const TOTAL_TEXT_MAX = 4000
-const CLAIM_SUFFIX_RESERVE = 64
+const SNOWFLAKE_MAX_DIGITS = 20
+export const CLAIM_SUFFIX_RESERVE = ' · claimed by <@'.length + SNOWFLAKE_MAX_DIGITS + '>'.length
 
 // Truncate to at most n chars, ending in an ellipsis when cut.
 function clip(s: string, n: number): string {
