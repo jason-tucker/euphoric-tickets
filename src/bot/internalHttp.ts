@@ -8,6 +8,12 @@ import { env } from '../config/env'
 import { log } from '../services/logger'
 import { runTicketToolCommand, type TicketToolAction } from '../services/ticketToolControl'
 import { reconcileBusinessTicketTool, reprocessTicketToolEmbeds } from '../services/ticketToolIngest'
+import {
+  handleIntegrationClose,
+  handleIntegrationOpen,
+  handleWebhookEnsure,
+  type RouteResult,
+} from '../services/integrationTickets'
 
 // P13 (lantern) — tiny internal HTTP server. Exposes POST /api/internal/dm so
 // the web's notification dispatcher can send a Discord DM through the bot
@@ -35,7 +41,6 @@ function tokenMatches(presented: string | string[] | undefined, secret: string):
 }
 
 export function startInternalHttp(client: Client): void {
-  const secret = internalSecret()
 
   // F1 (security review): when INTERNAL_TOKEN is unset the Discord bot token —
   // the single most sensitive credential — doubles as the internal HTTP shared
@@ -50,6 +55,26 @@ export function startInternalHttp(client: Client): void {
     )
   }
 
+  const server = createInternalServer(client)
+  server.listen(env.INTERNAL_PORT, () => {
+    log.info(`internal HTTP listening on :${env.INTERNAL_PORT}`)
+  })
+  server.on('error', (err) => log.error('internal HTTP error', { err: String(err) }))
+}
+
+// Integration API (v0.8.0) routes — called by the web's /api/v1 layer after it
+// has authenticated + scoped the integration key. See integrationTickets.ts.
+const INTEGRATION_ROUTES: Record<string, (client: Client, body: unknown) => Promise<RouteResult>> = {
+  '/api/internal/tickets/open': handleIntegrationOpen,
+  '/api/internal/tickets/close': handleIntegrationClose,
+  '/api/internal/tickets/webhook/ensure': handleWebhookEnsure,
+}
+
+// Builds (does not bind) the internal server. Split from startInternalHttp so
+// tests can listen on an ephemeral port.
+export function createInternalServer(client: Client): http.Server {
+  const secret = internalSecret()
+
   const ROUTES = new Set([
     '/api/internal/dm',
     '/api/internal/tickettool/command',
@@ -57,6 +82,7 @@ export function startInternalHttp(client: Client): void {
     '/api/internal/tickettool/reprocess-embeds',
     '/api/internal/guild/leave',
     '/api/internal/bot/username',
+    ...Object.keys(INTEGRATION_ROUTES),
   ])
 
   const server = http.createServer((req, res) => {
@@ -77,6 +103,26 @@ export function startInternalHttp(client: Client): void {
     req.on('end', () => {
       void (async () => {
         try {
+          const integrationRoute = INTEGRATION_ROUTES[url]
+          if (integrationRoute) {
+            let body: unknown
+            try {
+              body = JSON.parse(raw)
+            } catch {
+              res.writeHead(400, { 'Content-Type': 'application/json' }).end('{"error":"validation"}')
+              return
+            }
+            let out: RouteResult
+            try {
+              out = await integrationRoute(client, body)
+            } catch (err) {
+              log.error('integration route failed', { url, err: String(err) })
+              out = { status: 500, body: { error: 'internal_error' } }
+            }
+            res.writeHead(out.status, { 'Content-Type': 'application/json' }).end(JSON.stringify(out.body))
+            return
+          }
+
           if (url === '/api/internal/dm') {
             const { discordUserId, content } = JSON.parse(raw) as { discordUserId?: string; content?: string }
             if (!discordUserId || !content) {
@@ -201,8 +247,5 @@ export function startInternalHttp(client: Client): void {
     })
   })
 
-  server.listen(env.INTERNAL_PORT, () => {
-    log.info(`internal HTTP listening on :${env.INTERNAL_PORT}`)
-  })
-  server.on('error', (err) => log.error('internal HTTP error', { err: String(err) }))
+  return server
 }

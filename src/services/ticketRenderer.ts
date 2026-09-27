@@ -9,6 +9,7 @@ import {
   TextDisplayBuilder,
 } from 'discord.js'
 import type { PanelCategory } from './settingsService'
+import type { IntegrationCard } from '../db/schema/tickets'
 
 const ACCENT = 0xa855f7
 
@@ -75,8 +76,12 @@ export function buildTicketWelcome(opts: {
   firstMessage?: string | null
   // Optional URL to the web ticket detail — Link button alongside Claim/Close.
   webUrl?: string | null
+  // Integration API: the integration-supplied card (persisted on the ticket as
+  // integration_card). Its title + lines replace the default body and its
+  // link becomes an extra Link button. The tk:* customIds are unchanged.
+  card?: IntegrationCard | null
 }) {
-  const { ticketId, openerId, categoryLabel, categoryEmoji, subject, openedAt, claimerId, firstMessage, webUrl } =
+  const { ticketId, openerId, categoryLabel, categoryEmoji, subject, openedAt, claimerId, firstMessage, webUrl, card } =
     opts
 
   const openedTs = Math.floor((openedAt ?? new Date()).getTime() / 1000)
@@ -88,17 +93,25 @@ export function buildTicketWelcome(opts: {
     `-# Opened by <@${openerId}> · <t:${openedTs}:R>${claimerId ? ` · claimed by <@${claimerId}>` : ''}`,
   ].join('\n')
 
-  // Dominant body — custom template, else subject heading + default prompt.
-  const body =
-    firstMessage && firstMessage.trim().length > 0
-      ? firstMessage.trim()
-      : `${subject ? `### ${subject}\n` : ''}Describe your issue in this channel — staff will be with you shortly.`
+  const cardBody = card ? renderCardBody(card) : null
+  const hasTemplate = Boolean(firstMessage && firstMessage.trim().length > 0)
+
+  // Dominant body — custom template, else the integration card, else subject
+  // heading + default prompt.
+  const body = hasTemplate
+    ? firstMessage!.trim()
+    : cardBody ??
+      `${subject ? `### ${subject}\n` : ''}Describe your issue in this channel — staff will be with you shortly.`
 
   const container = new ContainerBuilder()
     .setAccentColor(ACCENT)
     .addTextDisplayComponents(new TextDisplayBuilder().setContent(header))
     .addSeparatorComponents(sep())
     .addTextDisplayComponents(new TextDisplayBuilder().setContent(body))
+  // A category template AND a card: the template leads, the card follows.
+  if (hasTemplate && cardBody) {
+    container.addSeparatorComponents(sep()).addTextDisplayComponents(new TextDisplayBuilder().setContent(cardBody))
+  }
 
   const claimBtn = new ButtonBuilder()
     .setCustomId(`tk:claim:${ticketId}`)
@@ -130,10 +143,40 @@ export function buildTicketWelcome(opts: {
         .setEmoji('🌐'),
     )
   }
+  const cardLinkUrl = card?.link ? safeLinkUrl(card.link.url) : null
+  if (card?.link && cardLinkUrl) {
+    row.addComponents(
+      new ButtonBuilder()
+        .setLabel((card.link.label || 'Open').slice(0, 80))
+        .setStyle(ButtonStyle.Link)
+        .setURL(cardLinkUrl),
+    )
+  }
 
   return {
     flags: MessageFlags.IsComponentsV2,
     components: [container, row],
+  }
+}
+
+// Text Display content caps at 4000 chars; a max-size card (title 100 + 25
+// lines × 200) can exceed that, so clamp.
+const CARD_BODY_MAX = 3900
+
+function renderCardBody(card: IntegrationCard): string {
+  const text = [`### ${card.title}`, ...(card.lines ?? [])].join('\n')
+  return text.length > CARD_BODY_MAX ? text.slice(0, CARD_BODY_MAX - 1) + '…' : text
+}
+
+// Link buttons reject anything but http(s); a bad URL would fail the whole
+// card send, so drop the button instead. (The web already enforces the
+// integration's link_origin.)
+function safeLinkUrl(url: string): string | null {
+  try {
+    const u = new URL(url)
+    return u.protocol === 'https:' || u.protocol === 'http:' ? u.toString() : null
+  } catch {
+    return null
   }
 }
 

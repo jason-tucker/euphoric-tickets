@@ -61,6 +61,7 @@ export async function getPanelCategories(
       emoji: ticketCategories.emoji,
       description: ticketCategories.description,
       staffOnly: ticketCategories.staffOnly,
+      integrationOnly: ticketCategories.integrationOnly,
     })
     .from(ticketCategories)
     .where(eq(ticketCategories.businessId, biz.id))
@@ -69,9 +70,10 @@ export async function getPanelCategories(
   if (rows.length === 0) return DEFAULT_PANEL_CATEGORIES
   // Discord ActionRow caps at 5 buttons. Staff-only destinations never get
   // a panel button — they exist only as move-into targets in the staff
-  // change-category flow.
+  // change-category flow. Integration-only categories never get one either —
+  // only an integration may open them (openTicket refuses stale buttons).
   return rows
-    .filter((r) => !r.staffOnly)
+    .filter((r) => !r.staffOnly && !r.integrationOnly)
     .slice(0, 5)
     .map((r) => ({
       key: r.key,

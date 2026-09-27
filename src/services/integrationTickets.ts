@@ -1,0 +1,406 @@
+// Integration API (v0.8.0) — the bot half. The web (euphoric-tickets-web)
+// authenticates integration API keys, scopes them to one business, validates
+// the payload, and then calls these through the internal HTTP bridge
+// (src/bot/internalHttp.ts, x-internal-token). The bot trusts only that token:
+// it never re-checks API keys, and it ALWAYS takes the business by id — never
+// from the guild, because several teams can share one guild.
+//
+// Contract: the "Tickets Integration API" §4.4 of the EFM Music Portal plan.
+
+import { ChannelType, type Client, type Guild, type GuildMember, type TextChannel } from 'discord.js'
+import { and, eq, sql } from 'drizzle-orm'
+import { db } from '../db/client'
+import { businesses, type Business } from '../db/schema/businesses'
+import { ticketCategories } from '../db/schema/ticketCategories'
+import { tickets, type IntegrationCard, type Ticket } from '../db/schema/tickets'
+import { integrationOpenClaims } from '../db/schema/integrationOpenClaims'
+import { closeTicket, ensureTicketWebhook, openTicket, type IntegrationIdentity } from './ticketService'
+import { isStaffForCategory } from './permissions'
+import { getOrCreateUserByDiscordId } from './userResolver'
+import { writeAudit } from './audit'
+import { log } from './logger'
+
+export type RouteResult = { status: number; body: Record<string, unknown> }
+
+// An `opening` claim younger than this blocks other opens of the same ref
+// (409 opening_in_progress); older ones are presumed dead and taken over.
+export const CLAIM_STALE_MS = 2 * 60 * 1000
+
+const SNOWFLAKE_RE = /^\d{17,20}$/
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+const err = (status: number, error: string): RouteResult => ({ status, body: { error } })
+
+// ───────────────────────────── validation ─────────────────────────────
+
+const str = (v: unknown, max: number): v is string => typeof v === 'string' && v.length > 0 && v.length <= max
+
+function parseCard(v: unknown): IntegrationCard | null | undefined {
+  if (v === undefined || v === null) return null
+  if (typeof v !== 'object') return undefined
+  const c = v as Record<string, unknown>
+  if (!str(c.title, 100)) return undefined
+  const lines = c.lines ?? []
+  if (!Array.isArray(lines) || lines.length > 25 || !lines.every((l) => typeof l === 'string' && l.length <= 200)) {
+    return undefined
+  }
+  let link: IntegrationCard['link'] = null
+  if (c.link !== undefined && c.link !== null) {
+    const l = c.link as Record<string, unknown>
+    if (typeof l !== 'object' || !str(l.label, 40) || !str(l.url, 2000)) return undefined
+    link = { label: l.label, url: l.url }
+  }
+  return { title: c.title, lines: lines as string[], link }
+}
+
+export type OpenRequest = {
+  integrationId: string
+  integrationSlug: string
+  integrationName: string
+  businessId: string
+  categoryKey: string
+  openerDiscordId: string
+  subject: string
+  card: IntegrationCard | null
+  externalRef: string
+}
+
+export function parseOpenRequest(raw: unknown): OpenRequest | null {
+  if (!raw || typeof raw !== 'object') return null
+  const b = raw as Record<string, unknown>
+  if (typeof b.integrationId !== 'string' || !UUID_RE.test(b.integrationId)) return null
+  if (!str(b.integrationSlug, 100) || !str(b.integrationName, 200)) return null
+  if (typeof b.businessId !== 'string' || !UUID_RE.test(b.businessId)) return null
+  if (!str(b.categoryKey, 100)) return null
+  if (typeof b.openerDiscordId !== 'string' || !SNOWFLAKE_RE.test(b.openerDiscordId)) return null
+  if (!str(b.subject, 100)) return null
+  if (!str(b.externalRef, 100)) return null
+  const card = parseCard(b.card)
+  if (card === undefined) return null
+  return {
+    integrationId: b.integrationId,
+    integrationSlug: b.integrationSlug,
+    integrationName: b.integrationName,
+    businessId: b.businessId,
+    categoryKey: b.categoryKey,
+    openerDiscordId: b.openerDiscordId,
+    subject: b.subject,
+    card,
+    externalRef: b.externalRef,
+  }
+}
+
+// ───────────────────────────── helpers ─────────────────────────────
+
+async function loadBusiness(businessId: string): Promise<Business | null> {
+  const [b] = await db.select().from(businesses).where(eq(businesses.id, businessId)).limit(1)
+  return b ?? null
+}
+
+async function loadTicket(ticketId: number, businessId: string): Promise<Ticket | null> {
+  const [t] = await db
+    .select()
+    .from(tickets)
+    .where(and(eq(tickets.id, ticketId), eq(tickets.businessId, businessId)))
+    .limit(1)
+  return t ?? null
+}
+
+function availableGuild(client: Client, guildId: string): Guild | null {
+  const guild = client.guilds.cache.get(guildId)
+  return guild && guild.available !== false ? guild : null
+}
+
+async function fetchTextChannel(guild: Guild, channelId: string | null): Promise<TextChannel | null> {
+  if (!channelId) return null
+  const ch = await guild.channels.fetch(channelId).catch(() => null)
+  return ch && ch.type === ChannelType.GuildText ? (ch as TextChannel) : null
+}
+
+// Discord: 10007 Unknown Member, 10013 Unknown User.
+function isUnknownMember(e: unknown): boolean {
+  const code = (e as { code?: unknown } | null)?.code
+  return code === 10007 || code === 10013
+}
+
+async function setClaim(
+  integrationId: string,
+  externalRef: string,
+  patch: Partial<{ state: 'opening' | 'open' | 'failed'; channelId: string | null; ticketId: number | null }>,
+): Promise<void> {
+  await db
+    .update(integrationOpenClaims)
+    .set({ ...patch, updatedAt: sql`now()` })
+    .where(and(eq(integrationOpenClaims.integrationId, integrationId), eq(integrationOpenClaims.externalRef, externalRef)))
+}
+
+// Best-effort: the web can always retry through /webhook/ensure.
+async function ensureWebhookQuietly(client: Client, business: Business, ticket: Ticket): Promise<void> {
+  if (ticket.discordWebhookUrl || ticket.status === 'closed') return
+  const guild = availableGuild(client, business.discordGuildId)
+  const channel = guild ? await fetchTextChannel(guild, ticket.discordChannelId) : null
+  if (!channel) return
+  await ensureTicketWebhook(channel, ticket.id).catch((e) =>
+    log.warn('integration adopt: webhook ensure failed', { ticketId: ticket.id, err: String(e) }),
+  )
+}
+
+// ───────────────────────────── open ─────────────────────────────
+
+type ClaimOutcome =
+  | { kind: 'owned'; orphanChannelId: string | null }
+  | { kind: 'adopt'; ticket: Ticket }
+  | { kind: 'busy' }
+
+// Step 1 of the open algorithm: claim (integration_id, external_ref).
+async function claimRef(integrationId: string, externalRef: string): Promise<ClaimOutcome> {
+  const inserted = await db
+    .insert(integrationOpenClaims)
+    .values({ integrationId, externalRef, state: 'opening' })
+    .onConflictDoNothing()
+    .returning({ integrationId: integrationOpenClaims.integrationId })
+  if (inserted.length > 0) return { kind: 'owned', orphanChannelId: null }
+
+  // Conflict. (a) A ticket already exists for the ref → adopt it.
+  const [existing] = await db
+    .select()
+    .from(tickets)
+    .where(and(eq(tickets.integrationId, integrationId), eq(tickets.externalRef, externalRef)))
+    .limit(1)
+  if (existing) return { kind: 'adopt', ticket: existing }
+
+  // (b) Someone is opening it right now (fresh `opening`) → 409.
+  // (c) Anything else (`opening` ≥ 2 min = presumed dead, `failed`, or `open`
+  //     without a ticket) → take over with a conditional UPDATE. Staleness is
+  //     judged by the DB clock so bot/DB clock skew can't matter.
+  const staleBefore = sql.raw(`now() - interval '${CLAIM_STALE_MS / 1000} seconds'`)
+  const [prev] = await db
+    .select({
+      channelId: integrationOpenClaims.channelId,
+      fresh: sql<boolean>`${integrationOpenClaims.state} = 'opening' and ${integrationOpenClaims.updatedAt} > ${staleBefore}`,
+    })
+    .from(integrationOpenClaims)
+    .where(and(eq(integrationOpenClaims.integrationId, integrationId), eq(integrationOpenClaims.externalRef, externalRef)))
+    .limit(1)
+  if (!prev) {
+    // The claim vanished between the insert and the read (deleted by an
+    // operator). Treat as busy; the caller's retry will re-insert.
+    return { kind: 'busy' }
+  }
+  if (prev.fresh) return { kind: 'busy' }
+
+  const [took] = await db
+    .update(integrationOpenClaims)
+    // channel_id is KEPT until the orphan is actually deleted (below), so a
+    // takeover that dies early still leaves the orphan findable.
+    .set({ state: 'opening', ticketId: null, updatedAt: sql`now()` })
+    .where(
+      and(
+        eq(integrationOpenClaims.integrationId, integrationId),
+        eq(integrationOpenClaims.externalRef, externalRef),
+        // Same predicate as above, negated: only a still-stale claim is taken.
+        sql`not (${integrationOpenClaims.state} = 'opening' and ${integrationOpenClaims.updatedAt} > ${staleBefore})`,
+      ),
+    )
+    .returning({ integrationId: integrationOpenClaims.integrationId })
+  if (!took) return { kind: 'busy' } // another request won the takeover
+  return { kind: 'owned', orphanChannelId: prev.channelId }
+}
+
+export async function handleIntegrationOpen(client: Client, raw: unknown): Promise<RouteResult> {
+  const req = parseOpenRequest(raw)
+  if (!req) return err(400, 'validation')
+
+  const business = await loadBusiness(req.businessId)
+  if (!business) return err(404, 'business_not_found')
+  const [category] = await db
+    .select()
+    .from(ticketCategories)
+    .where(and(eq(ticketCategories.businessId, business.id), eq(ticketCategories.key, req.categoryKey)))
+    .limit(1)
+  if (!category) return err(403, 'category_forbidden')
+
+  // 1. Claim the ref.
+  const claim = await claimRef(req.integrationId, req.externalRef)
+  if (claim.kind === 'busy') return err(409, 'opening_in_progress')
+  if (claim.kind === 'adopt') {
+    await setClaim(req.integrationId, req.externalRef, { state: 'open', ticketId: claim.ticket.id })
+    await ensureWebhookQuietly(client, business, claim.ticket)
+    return { status: 200, body: { ticketId: claim.ticket.id, channelId: claim.ticket.discordChannelId, created: false } }
+  }
+
+  // From here we own the claim: every exit must leave it `open` or `failed`.
+  const fail = async (result: RouteResult): Promise<RouteResult> => {
+    await setClaim(req.integrationId, req.externalRef, { state: 'failed' }).catch(() => {})
+    return result
+  }
+
+  try {
+    // 2. Guild + opener.
+    const guild = availableGuild(client, business.discordGuildId)
+    if (!guild) return await fail(err(503, 'guild_unavailable'))
+
+    // A takeover inherits the dead attempt's channel (created, never
+    // ticketed) — delete it so the retry ends with exactly one channel.
+    if (claim.orphanChannelId) {
+      const orphan = await guild.channels.fetch(claim.orphanChannelId).catch(() => null)
+      const gone = orphan
+        ? await orphan.delete('Orphaned integration open (takeover)').then(
+            () => true,
+            (e) => {
+              log.warn('integration open: orphan channel delete failed', { channelId: claim.orphanChannelId, err: String(e) })
+              return false
+            },
+          )
+        : true
+      if (gone) await setClaim(req.integrationId, req.externalRef, { channelId: null })
+    }
+
+    let member: GuildMember
+    try {
+      member = await guild.members.fetch({ user: req.openerDiscordId, force: true })
+    } catch (e) {
+      if (isUnknownMember(e)) return await fail(err(404, 'opener_not_member'))
+      log.warn('integration open: member fetch failed', { err: String(e) })
+      return await fail(err(503, 'guild_unavailable'))
+    }
+    if (member.pending) return await fail(err(403, 'opener_pending'))
+
+    // 3. Open (channel → claim.channel_id → ticket row → webhook → card → …).
+    const integration: IntegrationIdentity = {
+      id: req.integrationId,
+      slug: req.integrationSlug,
+      name: req.integrationName,
+    }
+    const result = await openTicket({
+      guild,
+      opener: member,
+      categoryKey: category.key,
+      business,
+      source: 'integration',
+      integration,
+      subject: req.subject,
+      card: req.card,
+      externalRef: req.externalRef,
+      skipOpenerDedupe: true,
+      bypassAllowRoles: category.integrationOnly,
+    })
+    if (!result.ok) {
+      // 4a. Insert failed (channel already deleted by openTicket) or refused.
+      if (result.code === 'insert_failed') return await fail(err(500, 'insert_failed'))
+      if (result.code === 'category_forbidden') return await fail(err(403, 'category_forbidden'))
+      return await fail({ status: 422, body: { error: result.code, reason: result.reason } })
+    }
+
+    // 4b. Success.
+    await setClaim(req.integrationId, req.externalRef, { state: 'open', ticketId: result.ticket.id })
+    return { status: 201, body: { ticketId: result.ticket.id, channelId: result.channel.id, created: true } }
+  } catch (e) {
+    log.error('integration open failed', { integration: req.integrationSlug, externalRef: req.externalRef, err: String(e) })
+    return await fail(err(500, 'internal_error'))
+  }
+}
+
+// ───────────────────────────── close ─────────────────────────────
+
+// The integration's slug for audit attribution. The close route's contract
+// carries no slug, and the bot doesn't mirror the web-owned `integrations`
+// table, so read just that column. Best-effort.
+async function integrationSlugFor(integrationId: string | null): Promise<string | null> {
+  if (!integrationId) return null
+  try {
+    const rows = await db.execute<{ slug: string }>(sql`select slug from integrations where id = ${integrationId} limit 1`)
+    return (rows as unknown as { slug: string }[])[0]?.slug ?? null
+  } catch {
+    return null
+  }
+}
+
+export async function handleIntegrationClose(client: Client, raw: unknown): Promise<RouteResult> {
+  const b = (raw ?? {}) as Record<string, unknown>
+  if (typeof b.ticketId !== 'number' || !Number.isInteger(b.ticketId)) return err(400, 'validation')
+  if (typeof b.businessId !== 'string' || !UUID_RE.test(b.businessId)) return err(400, 'validation')
+  if (b.actorDiscordId !== undefined && b.actorDiscordId !== null && (typeof b.actorDiscordId !== 'string' || !SNOWFLAKE_RE.test(b.actorDiscordId))) {
+    return err(400, 'validation')
+  }
+  if (b.reason !== undefined && b.reason !== null && typeof b.reason !== 'string') return err(400, 'validation')
+  const actorDiscordId = (b.actorDiscordId as string | null | undefined) ?? null
+  const reason = typeof b.reason === 'string' && b.reason.trim() ? b.reason.trim().slice(0, 500) : undefined
+
+  const business = await loadBusiness(b.businessId)
+  if (!business) return err(404, 'not_found')
+  const ticket = await loadTicket(b.ticketId, business.id)
+  if (!ticket) return err(404, 'not_found')
+  if (ticket.status === 'closed') return err(409, 'already_closed')
+
+  const slug = await integrationSlugFor(ticket.integrationId)
+  const via = slug ? `integration:${slug}` : 'integration'
+
+  const guild = availableGuild(client, business.discordGuildId)
+  if (!guild) return err(503, 'guild_unavailable')
+
+  // Closer: the actor when given AND staff for the ticket's category; else the bot.
+  const [category] = ticket.categoryId
+    ? await db.select().from(ticketCategories).where(eq(ticketCategories.id, ticket.categoryId)).limit(1)
+    : [null]
+  let closer: GuildMember | null = null
+  if (actorDiscordId) {
+    const actor = await guild.members.fetch({ user: actorDiscordId, force: true }).catch(() => null)
+    if (actor && isStaffForCategory(actor, business, category ?? null)) closer = actor
+  }
+  if (!closer) closer = guild.members.me ?? (await guild.members.fetchMe().catch(() => null))
+  if (!closer) return err(503, 'guild_unavailable')
+
+  const channel = await fetchTextChannel(guild, ticket.discordChannelId)
+  if (!channel) {
+    // The channel is already gone — nothing to transcribe or delete; just
+    // close the row (conditionally, so a concurrent close wins cleanly).
+    const closerUserId = await getOrCreateUserByDiscordId(closer.id, {
+      name: closer.user.globalName ?? closer.user.username,
+      image: closer.user.displayAvatarURL(),
+    })
+    const rows = await db
+      .update(tickets)
+      .set({ status: 'closed', closedAt: new Date(), closedByUserId: closerUserId, lastActivityAt: new Date() })
+      .where(and(eq(tickets.id, ticket.id), sql`${tickets.status} <> 'closed'`))
+      .returning({ id: tickets.id })
+    if (rows.length === 0) return err(409, 'already_closed')
+    await writeAudit({
+      businessId: business.id,
+      ticketId: ticket.id,
+      actorUserId: closerUserId,
+      action: 'closed',
+      metadata: { via, ...(reason ? { reason } : {}) },
+    })
+    return { status: 200, body: { closed: true } }
+  }
+
+  const result = await closeTicket({ guild, channel, ticket, closer, business, reason, via })
+  if (!result.ok) {
+    if (result.code === 'already_closed') return err(409, 'already_closed')
+    return { status: 422, body: { error: result.code ?? 'close_refused', reason: result.reason } }
+  }
+  return { status: 200, body: { closed: true } }
+}
+
+// ───────────────────────────── webhook/ensure ─────────────────────────────
+
+export async function handleWebhookEnsure(client: Client, raw: unknown): Promise<RouteResult> {
+  const b = (raw ?? {}) as Record<string, unknown>
+  if (typeof b.ticketId !== 'number' || !Number.isInteger(b.ticketId)) return err(400, 'validation')
+  if (typeof b.businessId !== 'string' || !UUID_RE.test(b.businessId)) return err(400, 'validation')
+
+  const business = await loadBusiness(b.businessId)
+  if (!business) return err(404, 'not_found')
+  const ticket = await loadTicket(b.ticketId, business.id)
+  if (!ticket) return err(404, 'not_found')
+  if (ticket.discordWebhookUrl) return { status: 200, body: { webhookUrl: ticket.discordWebhookUrl } }
+
+  const guild = availableGuild(client, business.discordGuildId)
+  if (!guild) return err(503, 'guild_unavailable')
+  const channel = await fetchTextChannel(guild, ticket.discordChannelId)
+  if (!channel) return err(404, 'channel_not_found')
+
+  const webhookUrl = await ensureTicketWebhook(channel, ticket.id)
+  return { status: 200, body: { webhookUrl } }
+}
