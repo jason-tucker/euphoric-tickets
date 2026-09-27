@@ -174,6 +174,47 @@ describe('open — claim rules', () => {
     expect(claim).toMatchObject({ state: 'open', channelId: live[0].id, ticketId: res.body.ticketId })
   })
 
+  it('orphan takeover: a non-10003 fetch/delete error keeps claim.channel_id and returns 503', async () => {
+    const s = await setup()
+    const body = openBody({ integration: s.integration, business: s.business, category: s.category, openerDiscordId: s.opener.id })
+    const orphan = await s.guild.channels.create({ name: 'ticket-songwriter', parent: s.parentId })
+    await db.insert(integrationOpenClaims).values({ integrationId: s.integration.id, externalRef: body.externalRef, state: 'failed', channelId: orphan.id })
+
+    // Transient fetch error.
+    const realFetch = s.guild.channels.fetch
+    s.guild.channels.fetch = async () => {
+      throw Object.assign(new Error('Internal Server Error'), { status: 500 })
+    }
+    expect(await handleIntegrationOpen(s.client, body)).toEqual({ status: 503, body: { error: 'guild_unavailable' } })
+    s.guild.channels.fetch = realFetch
+    expect(await getClaim(s.integration.id, body.externalRef)).toMatchObject({ state: 'failed', channelId: orphan.id })
+
+    // Delete refused (Missing Permissions).
+    const realDelete = orphan.delete.bind(orphan)
+    orphan.delete = async () => {
+      throw Object.assign(new Error('Missing Permissions'), { code: 50013 })
+    }
+    expect((await handleIntegrationOpen(s.client, body)).status).toBe(503)
+    expect(await getClaim(s.integration.id, body.externalRef)).toMatchObject({ state: 'failed', channelId: orphan.id })
+    expect(s.guild.liveTextChannels()).toEqual([orphan])
+
+    // Healthy retry deletes the orphan and opens exactly one channel.
+    orphan.delete = realDelete
+    const ok = await handleIntegrationOpen(s.client, body)
+    expect(ok.status).toBe(201)
+    expect(orphan.deleted).toBe(true)
+    expect(s.guild.liveTextChannels().map((c) => c.id)).toEqual([ok.body.channelId])
+  })
+
+  it('orphan takeover: 10003 Unknown Channel counts as gone', async () => {
+    const s = await setup()
+    const body = openBody({ integration: s.integration, business: s.business, category: s.category, openerDiscordId: s.opener.id })
+    await db.insert(integrationOpenClaims).values({ integrationId: s.integration.id, externalRef: body.externalRef, state: 'failed', channelId: snow() })
+    const res = await handleIntegrationOpen(s.client, body)
+    expect(res.status).toBe(201)
+    expect((await getClaim(s.integration.id, body.externalRef)).channelId).toBe(res.body.channelId)
+  })
+
   it('takes over a failed claim immediately', async () => {
     const s = await setup()
     const body = openBody({ integration: s.integration, business: s.business, category: s.category, openerDiscordId: s.opener.id })
@@ -420,6 +461,24 @@ describe('webhook/ensure', () => {
     expect(await a).toBe(other.url)
     expect(hold.made[0].deleted).toBe(true)
     expect(ch.webhooks).toEqual([other])
+  })
+
+  it('503 on a transient channel lookup error, 404 channel_not_found when the channel is gone', async () => {
+    const { s, id, ch } = await openWithoutWebhook()
+    const realFetch = s.guild.channels.fetch
+    s.guild.channels.fetch = async () => {
+      throw Object.assign(new Error('Missing Access'), { code: 50001 })
+    }
+    expect(await handleWebhookEnsure(s.client, { ticketId: id, businessId: s.business.id })).toEqual({
+      status: 503,
+      body: { error: 'guild_unavailable' },
+    })
+    s.guild.channels.fetch = realFetch
+    await ch.delete()
+    expect(await handleWebhookEnsure(s.client, { ticketId: id, businessId: s.business.id })).toEqual({
+      status: 404,
+      body: { error: 'channel_not_found' },
+    })
   })
 
   it('404s for a ticket of another business', async () => {

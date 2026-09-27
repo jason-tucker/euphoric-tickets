@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { eq } from 'drizzle-orm'
+import { ChannelType } from 'discord.js'
 import { db } from '../src/db/client'
 import { auditLogs, tickets, users } from '../src/db/schema'
 import { handleIntegrationClose, handleIntegrationOpen } from '../src/services/integrationTickets'
@@ -176,4 +177,39 @@ describe('POST /api/internal/tickets/close', () => {
     const [t] = await db.select().from(tickets).where(eq(tickets.id, s.ticketId))
     expect(t.status).toBe('closed')
   })
+
+  it('a transient channel fetch error → 503 guild_unavailable, row untouched; the retry closes fully', async () => {
+    const s = await openIntegrationTicket()
+    const realFetch = s.guild.channels.fetch
+    for (const e of [
+      Object.assign(new Error('Service Unavailable'), { status: 503 }),
+      Object.assign(new Error('Missing Access'), { code: 50001 }),
+      new TypeError('fetch failed'),
+    ]) {
+      s.guild.channels.fetch = async () => {
+        throw e
+      }
+      expect(await handleIntegrationClose(s.client, { ticketId: s.ticketId, businessId: s.second.business.id })).toEqual({
+        status: 503,
+        body: { error: 'guild_unavailable' },
+      })
+      const [t] = await db.select().from(tickets).where(eq(tickets.id, s.ticketId))
+      expect(t.status).toBe('open')
+      expect(t.closedAt).toBeNull()
+      expect(s.channel.deleted).toBe(false)
+    }
+    s.guild.channels.fetch = realFetch
+    expect((await handleIntegrationClose(s.client, { ticketId: s.ticketId, businessId: s.second.business.id })).status).toBe(200)
+    expect(s.channel.deleted).toBe(true)
+    expect(s.opener.sentDMs).toHaveLength(1)
+  })
+
+  it('a channel id that now resolves to a non-text channel counts as gone', async () => {
+    const s = await openIntegrationTicket()
+    s.guild.channelMap.set(s.channel.id, { id: s.channel.id, type: ChannelType.GuildVoice })
+    expect((await handleIntegrationClose(s.client, { ticketId: s.ticketId, businessId: s.second.business.id })).status).toBe(200)
+    const [t] = await db.select().from(tickets).where(eq(tickets.id, s.ticketId))
+    expect(t.status).toBe('closed')
+  })
 })
+

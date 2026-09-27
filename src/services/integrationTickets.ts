@@ -7,7 +7,7 @@
 //
 // Contract: the "Tickets Integration API" §4.4 of the EFM Music Portal plan.
 
-import { ChannelType, type Client, type Guild, type GuildMember, type TextChannel } from 'discord.js'
+import { ChannelType, type Client, type Guild, type GuildBasedChannel, type GuildMember, type TextChannel } from 'discord.js'
 import { and, eq, sql } from 'drizzle-orm'
 import { db } from '../db/client'
 import { businesses, type Business } from '../db/schema/businesses'
@@ -112,10 +112,28 @@ function availableGuild(client: Client, guildId: string): Guild | null {
   return guild && guild.available !== false ? guild : null
 }
 
-async function fetchTextChannel(guild: Guild, channelId: string | null): Promise<TextChannel | null> {
-  if (!channelId) return null
-  const ch = await guild.channels.fetch(channelId).catch(() => null)
-  return ch && ch.type === ChannelType.GuildText ? (ch as TextChannel) : null
+// Discord 10003 Unknown Channel — the ONLY error that proves a channel is gone.
+function isUnknownChannel(e: unknown): boolean {
+  return (e as { code?: unknown } | null)?.code === 10003
+}
+
+// Strict channel lookup. `gone` only when Discord says so (10003) or the id
+// resolves to something that isn't a text channel (or no id is recorded).
+// Everything else — 50001 Missing Access, 5xx, rate limits, network errors —
+// is `error`: the channel may well still exist, so callers must not act as if
+// it were deleted (they return 503 and leave state untouched for a retry).
+export type ChannelLookup = { kind: 'ok'; channel: TextChannel } | { kind: 'gone' } | { kind: 'error'; error: unknown }
+
+export async function lookupTextChannel(guild: Guild, channelId: string | null): Promise<ChannelLookup> {
+  if (!channelId) return { kind: 'gone' }
+  let ch: GuildBasedChannel | null
+  try {
+    ch = await guild.channels.fetch(channelId)
+  } catch (e) {
+    return isUnknownChannel(e) ? { kind: 'gone' } : { kind: 'error', error: e }
+  }
+  if (!ch) return { kind: 'error', error: new Error('channel fetch returned nothing') }
+  return ch.type === ChannelType.GuildText ? { kind: 'ok', channel: ch as TextChannel } : { kind: 'gone' }
 }
 
 // Discord: 10007 Unknown Member, 10013 Unknown User.
@@ -139,9 +157,9 @@ async function setClaim(
 async function ensureWebhookQuietly(client: Client, business: Business, ticket: Ticket): Promise<void> {
   if (ticket.discordWebhookUrl || ticket.status === 'closed') return
   const guild = availableGuild(client, business.discordGuildId)
-  const channel = guild ? await fetchTextChannel(guild, ticket.discordChannelId) : null
-  if (!channel) return
-  await ensureTicketWebhook(channel, ticket.id).catch((e) =>
+  const found = guild ? await lookupTextChannel(guild, ticket.discordChannelId) : null
+  if (found?.kind !== 'ok') return
+  await ensureTicketWebhook(found.channel, ticket.id).catch((e) =>
     log.warn('integration adopt: webhook ensure failed', { ticketId: ticket.id, err: String(e) }),
   )
 }
@@ -243,18 +261,23 @@ export async function handleIntegrationOpen(client: Client, raw: unknown): Promi
 
     // A takeover inherits the dead attempt's channel (created, never
     // ticketed) — delete it so the retry ends with exactly one channel.
+    // claim.channel_id is cleared ONLY once the orphan is provably gone (10003,
+    // or our delete succeeded). Any other failure keeps it recorded and fails
+    // this attempt with 503: carrying on would overwrite claim.channel_id with
+    // the new channel and leak the orphan for good.
     if (claim.orphanChannelId) {
-      const orphan = await guild.channels.fetch(claim.orphanChannelId).catch(() => null)
-      const gone = orphan
-        ? await orphan.delete('Orphaned integration open (takeover)').then(
-            () => true,
-            (e) => {
-              log.warn('integration open: orphan channel delete failed', { channelId: claim.orphanChannelId, err: String(e) })
-              return false
-            },
-          )
-        : true
-      if (gone) await setClaim(req.integrationId, req.externalRef, { channelId: null })
+      const orphanId = claim.orphanChannelId
+      let gone: boolean
+      try {
+        const orphan = await guild.channels.fetch(orphanId)
+        if (orphan) await orphan.delete('Orphaned integration open (takeover)')
+        gone = Boolean(orphan)
+      } catch (e) {
+        gone = isUnknownChannel(e)
+        if (!gone) log.warn('integration open: orphan channel fetch/delete failed', { channelId: orphanId, err: String(e) })
+      }
+      if (!gone) return await fail(err(503, 'guild_unavailable'))
+      await setClaim(req.integrationId, req.externalRef, { channelId: null })
     }
 
     let member: GuildMember
@@ -351,8 +374,14 @@ export async function handleIntegrationClose(client: Client, raw: unknown): Prom
   if (!closer) closer = guild.members.me ?? (await guild.members.fetchMe().catch(() => null))
   if (!closer) return err(503, 'guild_unavailable')
 
-  const channel = await fetchTextChannel(guild, ticket.discordChannelId)
-  if (!channel) {
+  const found = await lookupTextChannel(guild, ticket.discordChannelId)
+  if (found.kind === 'error') {
+    // Transient / permission error: the channel may still exist. Leave the
+    // row open so the web's retry can run the full close.
+    log.warn('integration close: channel lookup failed', { ticketId: ticket.id, err: String(found.error) })
+    return err(503, 'guild_unavailable')
+  }
+  if (found.kind === 'gone') {
     // The channel is already gone — nothing to transcribe or delete; just
     // close the row (conditionally, so a concurrent close wins cleanly).
     const closerUserId = await getOrCreateUserByDiscordId(closer.id, {
@@ -375,7 +404,7 @@ export async function handleIntegrationClose(client: Client, raw: unknown): Prom
     return { status: 200, body: { closed: true } }
   }
 
-  const result = await closeTicket({ guild, channel, ticket, closer, business, reason, via })
+  const result = await closeTicket({ guild, channel: found.channel, ticket, closer, business, reason, via })
   if (!result.ok) {
     if (result.code === 'already_closed') return err(409, 'already_closed')
     return { status: 422, body: { error: result.code ?? 'close_refused', reason: result.reason } }
@@ -398,9 +427,13 @@ export async function handleWebhookEnsure(client: Client, raw: unknown): Promise
 
   const guild = availableGuild(client, business.discordGuildId)
   if (!guild) return err(503, 'guild_unavailable')
-  const channel = await fetchTextChannel(guild, ticket.discordChannelId)
-  if (!channel) return err(404, 'channel_not_found')
+  const found = await lookupTextChannel(guild, ticket.discordChannelId)
+  if (found.kind === 'error') {
+    log.warn('webhook ensure: channel lookup failed', { ticketId: ticket.id, err: String(found.error) })
+    return err(503, 'guild_unavailable')
+  }
+  if (found.kind === 'gone') return err(404, 'channel_not_found')
 
-  const webhookUrl = await ensureTicketWebhook(channel, ticket.id)
+  const webhookUrl = await ensureTicketWebhook(found.channel, ticket.id)
   return { status: 200, body: { webhookUrl } }
 }
