@@ -10,8 +10,10 @@ const WEB_ONLY_TABLES = [
   'integration_webhook_allowlist',
 ]
 
-const command = process.argv.slice(2).find((a) => !a.startsWith('-'))
-if ((command === 'push' || command === 'migrate') && process.env.ALLOW_BOT_SCHEMA_PUSH !== '1') {
+// Refuse if `push` or `migrate` appears ANYWHERE in argv, not just as the
+// first non-flag argument (`drizzle-kit --config x push`, wrappers, etc.).
+const command = process.argv.find((a) => a === 'push' || a === 'migrate')
+if (command && process.env.ALLOW_BOT_SCHEMA_PUSH !== '1') {
   throw new Error(
     `Refusing "drizzle-kit ${command}" from the bot image: euphoric-tickets-web owns the schema. ` +
       'Set ALLOW_BOT_SCHEMA_PUSH=1 only for a throwaway database.',
