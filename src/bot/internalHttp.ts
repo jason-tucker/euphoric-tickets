@@ -8,6 +8,12 @@ import { env } from '../config/env'
 import { log } from '../services/logger'
 import { runTicketToolCommand, type TicketToolAction } from '../services/ticketToolControl'
 import { reconcileBusinessTicketTool, reprocessTicketToolEmbeds } from '../services/ticketToolIngest'
+import {
+  handleIntegrationClose,
+  handleIntegrationOpen,
+  handleWebhookEnsure,
+  type RouteResult,
+} from '../services/integrationTickets'
 
 // P13 (lantern) — tiny internal HTTP server. Exposes POST /api/internal/dm so
 // the web's notification dispatcher can send a Discord DM through the bot
@@ -35,11 +41,11 @@ function tokenMatches(presented: string | string[] | undefined, secret: string):
 }
 
 export function startInternalHttp(client: Client): void {
-  const secret = internalSecret()
 
   // F1 (security review): when INTERNAL_TOKEN is unset the Discord bot token —
   // the single most sensitive credential — doubles as the internal HTTP shared
-  // secret and is sent on the wire to WEB_BASE_URL by notifyBridge. That works
+  // secret and is sent on the wire to the web (WEB_INTERNAL_URL, else
+  // WEB_BASE_URL) by notifyBridge. That works
   // out of the box but reuses the bot token as an auth secret. Warn loudly so
   // operators set a dedicated INTERNAL_TOKEN (the same value on the web side).
   if (!env.INTERNAL_TOKEN) {
@@ -50,6 +56,29 @@ export function startInternalHttp(client: Client): void {
     )
   }
 
+  const server = createInternalServer(client)
+  server.listen(env.INTERNAL_PORT, () => {
+    log.info(`internal HTTP listening on :${env.INTERNAL_PORT}`)
+  })
+  server.on('error', (err) => log.error('internal HTTP error', { err: String(err) }))
+}
+
+// Integration API (v0.8.0) routes — called by the web's /api/v1 layer after it
+// has authenticated + scoped the integration key. See integrationTickets.ts.
+const INTEGRATION_ROUTES: Record<string, (client: Client, body: unknown) => Promise<RouteResult>> = {
+  '/api/internal/tickets/open': handleIntegrationOpen,
+  '/api/internal/tickets/close': handleIntegrationClose,
+  '/api/internal/tickets/webhook/ensure': handleWebhookEnsure,
+}
+
+// Request body cap, in bytes (the web budgets its open payload under it).
+export const MAX_BODY_BYTES = 16_000
+
+// Builds (does not bind) the internal server. Split from startInternalHttp so
+// tests can listen on an ephemeral port.
+export function createInternalServer(client: Client): http.Server {
+  const secret = internalSecret()
+
   const ROUTES = new Set([
     '/api/internal/dm',
     '/api/internal/tickettool/command',
@@ -57,6 +86,7 @@ export function startInternalHttp(client: Client): void {
     '/api/internal/tickettool/reprocess-embeds',
     '/api/internal/guild/leave',
     '/api/internal/bot/username',
+    ...Object.keys(INTEGRATION_ROUTES),
   ])
 
   const server = http.createServer((req, res) => {
@@ -69,14 +99,47 @@ export function startInternalHttp(client: Client): void {
       return
     }
     const url = req.url
-    let raw = ''
-    req.on('data', (c) => {
-      raw += c
-      if (raw.length > 16_000) req.destroy()
+    // Collect raw Buffers and decode ONCE: decoding per chunk would turn a
+    // multi-byte UTF-8 character split across two TCP chunks into U+FFFD.
+    // The cap is in BYTES.
+    const chunks: Buffer[] = []
+    let size = 0
+    let tooBig = false
+    req.on('data', (c: Buffer) => {
+      if (tooBig) return
+      size += c.length
+      if (size > MAX_BODY_BYTES) {
+        tooBig = true
+        req.destroy()
+        return
+      }
+      chunks.push(c)
     })
     req.on('end', () => {
+      if (tooBig) return
+      const raw = Buffer.concat(chunks).toString('utf8')
       void (async () => {
         try {
+          const integrationRoute = INTEGRATION_ROUTES[url]
+          if (integrationRoute) {
+            let body: unknown
+            try {
+              body = JSON.parse(raw)
+            } catch {
+              res.writeHead(400, { 'Content-Type': 'application/json' }).end('{"error":"validation"}')
+              return
+            }
+            let out: RouteResult
+            try {
+              out = await integrationRoute(client, body)
+            } catch (err) {
+              log.error('integration route failed', { url, err: String(err) })
+              out = { status: 500, body: { error: 'internal_error' } }
+            }
+            res.writeHead(out.status, { 'Content-Type': 'application/json' }).end(JSON.stringify(out.body))
+            return
+          }
+
           if (url === '/api/internal/dm') {
             const { discordUserId, content } = JSON.parse(raw) as { discordUserId?: string; content?: string }
             if (!discordUserId || !content) {
@@ -201,8 +264,5 @@ export function startInternalHttp(client: Client): void {
     })
   })
 
-  server.listen(env.INTERNAL_PORT, () => {
-    log.info(`internal HTTP listening on :${env.INTERNAL_PORT}`)
-  })
-  server.on('error', (err) => log.error('internal HTTP error', { err: String(err) }))
+  return server
 }

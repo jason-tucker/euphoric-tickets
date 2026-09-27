@@ -9,6 +9,7 @@ import {
   TextDisplayBuilder,
 } from 'discord.js'
 import type { PanelCategory } from './settingsService'
+import type { IntegrationCard } from '../db/schema/tickets'
 
 const ACCENT = 0xa855f7
 
@@ -75,30 +76,56 @@ export function buildTicketWelcome(opts: {
   firstMessage?: string | null
   // Optional URL to the web ticket detail — Link button alongside Claim/Close.
   webUrl?: string | null
+  // Integration API: the integration-supplied card (persisted on the ticket as
+  // integration_card). Its title + lines replace the default body and its
+  // link becomes an extra Link button. The tk:* customIds are unchanged.
+  card?: IntegrationCard | null
 }) {
-  const { ticketId, openerId, categoryLabel, categoryEmoji, subject, openedAt, claimerId, firstMessage, webUrl } =
+  const { ticketId, openerId, categoryLabel, categoryEmoji, subject, openedAt, claimerId, firstMessage, webUrl, card } =
     opts
 
   const openedTs = Math.floor((openedAt ?? new Date()).getTime() / 1000)
   const emoji = categoryEmoji ? `${categoryEmoji} ` : '🎫 '
 
   // Compact header — small subtext so the body dominates.
-  const header = [
+  const headerBase = [
     `-# ${emoji}**Ticket #${ticketId}** · ${categoryLabel}`,
-    `-# Opened by <@${openerId}> · <t:${openedTs}:R>${claimerId ? ` · claimed by <@${claimerId}>` : ''}`,
+    `-# Opened by <@${openerId}> · <t:${openedTs}:R>`,
   ].join('\n')
+  const header = claimerId ? `${headerBase} · claimed by <@${claimerId}>` : headerBase
 
-  // Dominant body — custom template, else subject heading + default prompt.
-  const body =
-    firstMessage && firstMessage.trim().length > 0
-      ? firstMessage.trim()
-      : `${subject ? `### ${subject}\n` : ''}Describe your issue in this channel — staff will be with you shortly.`
+  // Components V2 caps the TOTAL text across all Text Displays at 4000 chars.
+  // Budget the body (template and/or card) against what the header leaves,
+  // reserving room for the claimer suffix so the Claim re-render — which adds
+  // it — truncates identically and still fits.
+  let budget = TOTAL_TEXT_MAX - headerBase.length - CLAIM_SUFFIX_RESERVE
+
+  const cardBody = card ? renderCardBody(card) : null
+  const hasTemplate = Boolean(firstMessage && firstMessage.trim().length > 0)
+
+  // Dominant body — custom template, else the integration card, else subject
+  // heading + default prompt.
+  const body = clip(
+    hasTemplate
+      ? firstMessage!.trim()
+      : cardBody ??
+          `${subject ? `### ${subject}\n` : ''}Describe your issue in this channel — staff will be with you shortly.`,
+    budget,
+  )
+  budget -= body.length
 
   const container = new ContainerBuilder()
     .setAccentColor(ACCENT)
     .addTextDisplayComponents(new TextDisplayBuilder().setContent(header))
     .addSeparatorComponents(sep())
     .addTextDisplayComponents(new TextDisplayBuilder().setContent(body))
+  // A category template AND a card: the template leads, the card follows in
+  // whatever budget the template left.
+  if (hasTemplate && cardBody && budget >= 2) {
+    container
+      .addSeparatorComponents(sep())
+      .addTextDisplayComponents(new TextDisplayBuilder().setContent(clip(cardBody, budget)))
+  }
 
   const claimBtn = new ButtonBuilder()
     .setCustomId(`tk:claim:${ticketId}`)
@@ -130,10 +157,57 @@ export function buildTicketWelcome(opts: {
         .setEmoji('🌐'),
     )
   }
+  const cardLinkUrl = card?.link ? safeLinkUrl(card.link.url) : null
+  if (card?.link && cardLinkUrl) {
+    row.addComponents(
+      new ButtonBuilder()
+        .setLabel((card.link.label || 'Open').slice(0, 80))
+        .setStyle(ButtonStyle.Link)
+        .setURL(cardLinkUrl),
+    )
+  }
 
   return {
     flags: MessageFlags.IsComponentsV2,
     components: [container, row],
+  }
+}
+
+// Discord: at most 4000 chars of text across all Text Displays of one
+// Components V2 message. The claimer suffix (` · claimed by <@snowflake>`,
+// ≤ 37 chars) is reserved up front.
+export const TOTAL_TEXT_MAX = 4000
+const CLAIM_SUFFIX_RESERVE = 64
+
+// Truncate to at most n chars, ending in an ellipsis when cut.
+function clip(s: string, n: number): string {
+  return s.length > n ? s.slice(0, Math.max(0, n - 1)) + '…' : s
+}
+
+// card.title / card.lines are rendered as-is. They arrive ALREADY
+// markdown-escaped: the web escapes subject, card.title, card.lines and the
+// close reason at its /api/v1 boundary (euphoric-tickets-web
+// src/server/integrations/api.ts, escapeDiscordMarkdown) before calling the
+// bot. The bot must not escape them again (that would show the backslashes).
+function renderCardBody(card: IntegrationCard): string {
+  return [`### ${card.title}`, ...(card.lines ?? [])].join('\n')
+}
+
+// Discord's maximum link-button URL length.
+export const LINK_URL_MAX = 512
+
+// Link buttons reject anything but http(s) and anything over 512 chars; a bad
+// URL would fail the whole card send, so drop the button instead. The length
+// is checked AFTER normalisation — new URL() can lengthen a URL (percent-
+// encoding). (The web already enforces the integration's link_origin.)
+export function safeLinkUrl(url: string): string | null {
+  try {
+    const u = new URL(url)
+    if (u.protocol !== 'https:' && u.protocol !== 'http:') return null
+    const out = u.toString()
+    return out.length <= LINK_URL_MAX ? out : null
+  } catch {
+    return null
   }
 }
 

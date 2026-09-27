@@ -1,5 +1,56 @@
 # Changelog
 
+## [0.8.0] — 2026-09-26 — Integration API (bot half): internal open/close/webhook routes, integration_only, Claim/Close parity
+
+### Added
+- **Integration API internal routes** on the internal HTTP bridge (same `x-internal-token` auth, same 16 KB body cap), called by the web's new public `/api/v1/tickets` after it authenticates and scopes an integration key. The bot trusts only the internal token and always takes the business **by id** — never from the guild, since `euphoric` and `euphoricfm` share one. (`src/services/integrationTickets.ts`, `src/bot/internalHttp.ts`)
+  - `POST /api/internal/tickets/open` `{integrationId, integrationSlug, integrationName, businessId, categoryKey, openerDiscordId, subject, card, externalRef}` → `201/200 {ticketId, channelId, created}` · `400 validation` · `404 opener_not_member` · `403 integration_forbidden | opener_pending | category_forbidden` · `409 opening_in_progress | ticket_channel_missing` · `503 guild_unavailable`. Idempotent per `(integrationId, externalRef)` through the new `integration_open_claims` table: an existing ticket is **adopted** (`created:false`, webhook ensured); a claim that is still `opening` and under 2 minutes old returns 409; a stale or `failed` claim is **taken over** with a conditional UPDATE, and the dead attempt's orphan channel is deleted. The opener is fetched with `force:true` (missing → 404, pending → 403).
+  - `POST /api/internal/tickets/close` `{ticketId, businessId, integrationId, actorDiscordId?, reason?}` → `200 {closed:true, closedBy:'actor'|'bot'}` · `403 integration_forbidden` · `404 not_found` · `409 already_closed` · `503 guild_unavailable`. The closer is the actor when they hold a category-staff, team-staff or team-admin role (the web's `checkActor` set), otherwise the bot (`guild.members.me`). Audit `via='integration:<slug>'`.
+  - `POST /api/internal/tickets/webhook/ensure` `{ticketId, businessId, integrationId}` → `200 {webhookUrl}` · `403 integration_forbidden` · `404 not_found | channel_not_found` · `503 guild_unavailable`. Serialized per ticket with a Postgres advisory lock; reuses a bot-owned `ticket-<id>` webhook left by a crash.
+  - The full contract table is in `CLAUDE.md` ("Integration route contract").
+- **`openTicket` integration options** (all default to today's behaviour): `source:'integration'`, `integration`, `subject` (replaces the `<key> from <user>` subject), `card`, `externalRef`, `skipOpenerDedupe`, `bypassAllowRoles`. For integration opens it writes `claim.channel_id` immediately after the channel is created, stores `integration_id` / `external_ref` / `integration_card` on the ticket, deletes the channel if the ticket insert fails, **always** creates and persists a channel webhook (non-fatal — the web retries via `/webhook/ensure`), renders the card's title and lines plus a link button on the welcome card (the `tk:*` customIds are unchanged), then pings, notifies and audits exactly like a panel open.
+- **`WEB_INTERNAL_URL`** (optional, empty-string coerced): the notify bridge now POSTs to the web's private-network URL (e.g. `http://tickets-web:3000`) when set. `WEB_BASE_URL` stays the public base for links and remains the fallback.
+- **Test suite.** vitest (dev dep) with a throwaway Postgres and mocked discord.js objects; `pnpm test:docker` (`scripts/test-docker.sh`) runs typecheck, build and tests in `node:24-alpine` against `postgres:16-alpine` on a private Docker network. 73 tests cover the claim rules (adopt, 409, takeover with orphan deletion), a crash between channel create and ticket insert followed by a retry (one channel), 10 parallel opens (one channel), stacked integration tickets per opener, `integration_only` refusal, the close closer rule and DM link, Claim/Close parity, webhook ensure races, HTTP auth, the notify URL, and settings-modal protection of `integration_only` categories.
+
+### Changed
+- **`integration_only` categories** are refused by `openTicket` for every non-integration source (panel buttons, including stale panels), never get a panel button (`getPanelCategories`), and are refused by `/tickets convert`.
+- **`closeTicket`** takes an optional `business` (used for the opener's DM web link instead of the guild default team), `reason` (added to the DM) and `via` (audit metadata). Its status update is now conditional on the ticket not already being closed, so concurrent closes from Discord and the web can't both run the transcript, DM and delete flow. The close-confirm button passes the ticket's own business.
+
+### Fixed
+- **Claim/Close button parity.** The welcome-card **Claim** and **Close** buttons gated on the guild default team's `admin_role_ids` and re-rendered the card from guild-level lookups. They now resolve the ticket by channel and its team from `ticket.businessId`, gate with the per-category staff rule (`resolveTicketAccessByChannel` accepts a null business for this), and the Claim re-render uses `staffRoleIdsForCategory`, the ticket's own team slug for the web link, and the persisted `integration_card`. A category-only staff member (such as EFM Managers) can now claim, and the card and its links survive a Claim.
+- **Settings modal no longer clobbers `integration_only` categories.** `/tickets settings` → Edit replaced a team's categories by deleting *every* row and re-inserting the JSON. `integration_only` categories (created by sudo/seed, with their own `staff_role_ids`) are now excluded from the editable JSON, preserved untouched on save (only non-integration rows are deleted and re-inserted), and a submitted key that matches one — case-insensitively — is refused with a clear message before anything is written. (`replaceTicketCategories`, `findIntegrationOnlyKeyConflicts`, `settingsModal.ts`)
+
+### Fixed before release (pre-merge review)
+- **Webhook ensure race (blocker).** A caller that lost the persist race deleted a webhook the winner had reused and persisted, leaving the ticket pointing at a dead webhook (the concurrent-ensure test failed about 1 run in 4). `ensureTicketWebhook` now runs read → fetch/create → persist in one transaction under `pg_advisory_xact_lock(0x45545748, ticketId)`, and its fallback re-reads the persisted id before deleting anything.
+- **Strict channel lookups.** Every channel error used to count as "channel gone": a transient Discord error during an integration close closed the row without deleting the channel, building the transcript or DMing the opener. Only `10003 Unknown Channel` (or a non-text channel) is "gone" now. Close and ensure answer `503 guild_unavailable` on anything else and leave the row untouched. An open takeover clears `claim.channel_id` only when the orphan is provably gone.
+- **Close-actor staff set.** The close actor is judged with the web's role-only set, category staff ∪ `businesses.staff_role_ids` ∪ `businesses.admin_role_ids`, via `integrationActorStaffRoleIds`. Manage Server, Administrator and sudo do not count, pending members never do, and human Discord flows are unchanged. The response's `closedBy` shows when the bot fallback was used.
+- **Discord message limits.** `card.link.url` is capped at 512 characters. `safeLinkUrl` drops a link whose normalised form is over 512 characters. The welcome card budgets its header, template and card to the 4000-character total text limit of Components V2 and truncates the card with `…`. If an integration open's welcome send is still rejected, it is retried once without the card link, and the audit, event log and notify always run.
+- **Request bodies** are collected as Buffers and decoded once, so a multi-byte character split across chunks no longer turns into U+FFFD. The 16 KB cap is now counted in bytes.
+- **Schema push safety.** Both drizzle configs refuse `push`/`migrate` unless `ALLOW_BOT_SCHEMA_PUSH=1`, and `tablesFilter` hides the four web-only tables. A bot push against a web-pushed database now prints `No changes detected`. The old config emitted 4× `DROP TABLE` plus `DROP COLUMN businesses.staff_role_ids`.
+- **Adopt with a nulled channel** returns `409 ticket_channel_missing {ticketId}` instead of `200 {channelId:null}`, which the web could not parse.
+- **Subject** is stored trimmed. A blank subject is `400 validation` instead of silently falling back to `<key> from <user>`.
+- **Integration binding** is re-checked on every route against the mirrored `integrations` row (defense in depth). `close` and `ensure` now require `integrationId`.
+- **Markdown.** The web escapes `subject`, `card.*` and the close `reason`; the bot renders them verbatim and never re-escapes them (documented in code and pinned by tests).
+
+### Schema (mirror — the web owns and pushes it)
+- `businesses`: `staff_role_ids` text NOT NULL DEFAULT `''` (mirrored from web v0.11.0 exactly, so a bot push no longer drops it).
+- `tickets`: `integration_id` uuid (FK → `integrations.id`), `external_ref` text, `integration_card` jsonb, and `tickets_integration_external_ref_uq` UNIQUE (`integration_id`, `external_ref`).
+- `ticket_messages`: `metadata` jsonb NOT NULL DEFAULT `'{}'`, `author_kind` text NOT NULL DEFAULT `'human'`, `idempotency_key` text, and `ticket_messages_ticket_idempotency_uq` UNIQUE (`ticket_id`, `idempotency_key`).
+- `ticket_categories`: `integration_only` boolean NOT NULL DEFAULT false.
+- New table `integration_open_claims` (PK `integration_id, external_ref`; `integration_id` FK → `integrations` ON DELETE CASCADE; `state` ∈ `opening|open|failed`, `channel_id`, `ticket_id` FK → `tickets` ON DELETE SET NULL, `updated_at`).
+- `integrations` mirrored (read-only for the bot — it reads `slug` for close-audit attribution). The other web-owned Integration API tables (`integration_webhook_allowlist`, `integration_deliveries`, `integration_ticket_state`, `integration_audit`) are not used by the bot and are not mirrored.
+- Checked against the web's `docs/INTEGRATION_SCHEMA.md` (web v0.12.0): names, types, nullability, defaults, index names and FKs match for every mirrored table. Pushing this mirror twice into an empty database gives an empty second diff.
+
+### Deploy notes
+- **Web first.** The bot selects every declared column (`db.select().from(tickets)`), so the web must push this schema before this image runs. Check the live columns between the two deploys.
+- Set `WEB_INTERNAL_URL` in the bot's `.env` in the same step as this deploy.
+- **Web must match this contract.** Send `integrationId` on `close` and `webhook/ensure` (it is required: without it the bot answers 400), accept or ignore `closedBy` in the close response, and map `409 ticket_channel_missing` on open (a 409 is no longer always `opening_in_progress`). The bot also returns `403 integration_forbidden`, which the web should treat as a server-side inconsistency.
+
+### Paired with
+- **euphoric-tickets-web** Integration API (public `/api/v1`, schema owner, outbound webhooks).
+
+`v0.8.0 · ea47d7f`
+
 ## [0.7.4] — 2026-07-06 — Docs: reconcile README with current code
 
 ### Docs

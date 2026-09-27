@@ -12,6 +12,7 @@ for (const key of [
   'SUDO_USER_IDS',
   'BOT_OWNER_ID',
   'WEB_BASE_URL',
+  'WEB_INTERNAL_URL',
   'INTERNAL_TOKEN',
 ]) {
   if (process.env[key] === '') delete process.env[key]
@@ -42,6 +43,11 @@ const envSchema = z.object({
   // Public URL of the web companion app — used for the "view in web" link
   // in close-ticket DMs and elsewhere. Defaults to the production host.
   WEB_BASE_URL: z.string().url().default('https://tickets.euphoric.fm'),
+  // Private-network URL of the web companion (e.g. http://tickets-web:3000),
+  // used ONLY for bot → web server-to-server calls (the notify bridge) so they
+  // never leave the Docker network or depend on the public edge. Links shown to
+  // humans keep using WEB_BASE_URL. Unset = fall back to WEB_BASE_URL.
+  WEB_INTERNAL_URL: z.string().url().optional(),
   // P13: shared secret authenticating the web ↔ bot internal endpoints
   // (web → bot DM dispatch, bot → web notify dispatch). Optional: when unset,
   // those endpoints are disabled and notifications degrade gracefully.

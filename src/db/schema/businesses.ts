@@ -18,6 +18,14 @@ export const businesses = pgTable(
     // settings UI can post a single CSV form value).
     adminRoleIds: text('admin_role_ids').notNull().default(''),
 
+    // Comma-separated snowflakes for the team-wide "staff" tier ("Team Member"
+    // roles in the web settings). Mirrored from euphoric-tickets-web (v0.11.0),
+    // declared exactly as there so a push never diffs it. The bot reads it only
+    // for the Integration API close-actor rule
+    // (permissions.integrationActorStaffRoleIds); human Discord flows still use
+    // isStaffForCategory.
+    staffRoleIds: text('staff_role_ids').notNull().default(''),
+
     // Legacy single-channel webhook — used as a fallback when per-ticket
     // channels can't be created (bot token missing or guild misconfigured).
     // Format: full https://discord.com/api/webhooks/<id>/<token>

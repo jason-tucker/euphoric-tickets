@@ -223,13 +223,18 @@ async function convertHere(interaction: ChatInputCommandInteraction): Promise<vo
   let categoryId: string | null = null
   if (catKey) {
     const [hit] = await db
-      .select({ catId: ticketCategories.id, biz: businesses })
+      .select({ catId: ticketCategories.id, integrationOnly: ticketCategories.integrationOnly, biz: businesses })
       .from(ticketCategories)
       .innerJoin(businesses, eq(businesses.id, ticketCategories.businessId))
       .where(and(eq(businesses.discordGuildId, interaction.guild!.id), eq(ticketCategories.key, catKey)))
       .limit(1)
     if (!hit) {
       await interaction.editReply(`Unknown category \`${catKey}\`. Leave it blank or use an existing key.`)
+      return
+    }
+    // Integration-only categories are opened exclusively via the Integration API.
+    if (hit.integrationOnly) {
+      await interaction.editReply(`\`${catKey}\` is an integration-only category — its tickets can't be created from Discord.`)
       return
     }
     categoryId = hit.catId
@@ -873,6 +878,9 @@ export async function executeCloseConfirm(opts: {
     channel,
     ticket: res.ticket,
     closer,
+    // The ticket's OWN team, so the opener's DM link points at the right
+    // business even when several teams share this guild.
+    business: res.business,
   })
   if (!result.ok) {
     await interaction.editReply({ content: result.reason, components: [] })

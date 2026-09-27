@@ -75,6 +75,29 @@ export function isStaffForCategory(
   return staffIds.some((id) => member.roles.cache.has(id))
 }
 
+// Integration API actor rule — the staff set for an actor named by an
+// integration (the close route's actorDiscordId). Deliberately ROLE-BASED
+// ONLY and identical to the web's checkActor/staffRoleIdsForCategory:
+//   category staff_role_ids ∪ businesses.staff_role_ids ∪ businesses.admin_role_ids.
+// Unlike isStaffForCategory it does NOT count Manage Server / Administrator
+// or sudo, and the category list does not "fall back" — it is a union. Do not
+// use it for human Discord flows (buttons, slash commands), which keep
+// isStaffForCategory.
+export function integrationActorStaffRoleIds(
+  business: Pick<Business, 'staffRoleIds' | 'adminRoleIds'>,
+  category: Pick<TicketCategory, 'staffRoleIds'> | null | undefined,
+): string[] {
+  return [...new Set([...parseCsv(category?.staffRoleIds), ...parseCsv(business.staffRoleIds), ...parseCsv(business.adminRoleIds)])]
+}
+
+export function isIntegrationActorStaff(
+  member: GuildMember,
+  business: Pick<Business, 'staffRoleIds' | 'adminRoleIds'>,
+  category: Pick<TicketCategory, 'staffRoleIds'> | null | undefined,
+): boolean {
+  return integrationActorStaffRoleIds(business, category).some((id) => member.roles.cache.has(id))
+}
+
 // Panel-button gate. Empty allow_role_ids = anyone in the guild may open;
 // non-empty = require at least one matching role. Admins always pass.
 export function canOpenCategory(
@@ -136,9 +159,13 @@ export async function resolveTicketAccess(
 
 // Convenience for places that have only a discord channel id and need the
 // ticket row alongside its access decision.
+//
+// `business` may be null: the ticket's own team (ticket.businessId) is then
+// the only source — the welcome-card buttons use this so they never depend on
+// the guild's default team.
 export async function resolveTicketAccessByChannel(
   member: GuildMember,
-  business: Business,
+  business: Business | null,
   channelId: string,
 ): Promise<{ ticket: Ticket; access: TicketAccess; business: Business } | null> {
   const [t] = await db.select().from(tickets).where(eq(tickets.discordChannelId, channelId)).limit(1)
@@ -147,10 +174,11 @@ export async function resolveTicketAccessByChannel(
   // than the guild's default. Resolve access (staff/admin roles, category) and
   // attribute the ticket against its OWN business.
   let biz = business
-  if (t.businessId !== business.id) {
+  if (!biz || t.businessId !== biz.id) {
     const [owner] = await db.select().from(businesses).where(eq(businesses.id, t.businessId)).limit(1)
     if (owner) biz = owner
   }
+  if (!biz) return null
   const access = await resolveTicketAccess(member, biz, t)
   return { ticket: t, access, business: biz }
 }

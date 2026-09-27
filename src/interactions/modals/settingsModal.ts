@@ -12,6 +12,8 @@ function optionalField(interaction: ModalSubmitInteraction, customId: string): s
   }
 }
 import {
+  findIntegrationOnlyKeyConflicts,
+  integrationOnlyConflictMessage,
   isSnowflake,
   parseSnowflakeCsv,
   replaceTicketCategories,
@@ -69,6 +71,12 @@ export async function handleSettingsModalSubmit(interaction: ModalSubmitInteract
 
   const panelResult = validatePanelCategoriesJson(panelCategoriesRaw)
   if (!panelResult.ok) errors.push(`• Panel categories: ${panelResult.error}`)
+  // Refuse integration-only key clashes BEFORE any write, so a refused save
+  // doesn't half-apply the business settings below.
+  if (panelResult.ok) {
+    const clash = await findIntegrationOnlyKeyConflicts(business.id, panelResult.value)
+    if (clash.length) errors.push(`• Panel categories: ${integrationOnlyConflictMessage(clash)}`)
+  }
 
   const { ok: validTtCats, bad: badTtCats } = parseSnowflakeCsv(ttCategoriesRaw)
   if (badTtCats.length) errors.push(`• Invalid TicketTool category IDs: \`${badTtCats.join('`, `')}\``)
