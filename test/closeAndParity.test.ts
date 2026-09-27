@@ -1,11 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { eq } from 'drizzle-orm'
-import { ChannelType } from 'discord.js'
+import { ChannelType, MessageFlags, PermissionFlagsBits } from 'discord.js'
 import { db } from '../src/db/client'
 import { auditLogs, integrations, tickets, users } from '../src/db/schema'
 import { handleIntegrationClose, handleIntegrationOpen } from '../src/services/integrationTickets'
 import { handleTicketClaim } from '../src/interactions/buttons/ticketClaim'
 import { handleTicketClose } from '../src/interactions/buttons/ticketClose'
+import { execute as executeTickets, executeCloseConfirm } from '../src/commands/tickets'
 import { componentsJson, fakeClient, seedTeam, type FakeGuild, type FakeMember, type FakeTextChannel } from './fakes'
 import { openBody, seedIntegration, stubFetch } from './helpers'
 
@@ -113,6 +114,81 @@ describe('Claim parity (welcome-card button)', () => {
     const opener = buttonInteraction(s.guild, s.channel, s.opener, `tk:close:${s.ticketId}`)
     await handleTicketClose(opener as any)
     expect(componentsJson((opener.editReply.mock.calls[0] as any)[0])).toContain('tk:close_confirm:')
+  })
+})
+
+// 2026-07-21 review finding #2 (F2) regression: the "Close & delete" confirm
+// button re-validates the clicker, and /tickets close only ever shows it
+// ephemerally. A non-staff member who was added to the ticket channel (so can
+// see and click in it) must not be able to close and delete the ticket.
+describe('Close confirm authz (F2 regression)', () => {
+  async function ticketWithAddedOutsider() {
+    const s = await openIntegrationTicket()
+    // The outsider was added to the channel (a member, not staff, not opener).
+    s.channel.overwrites.push({ id: s.outsider.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] })
+    return s
+  }
+
+  it('refuses a non-staff channel member who clicks tk:close_confirm; nothing is closed', async () => {
+    const s = await ticketWithAddedOutsider()
+    const i = buttonInteraction(s.guild, s.channel, s.outsider, `tk:close_confirm:${s.ticketId}`)
+    await executeCloseConfirm({ interaction: i as any, ticketId: s.ticketId })
+    expect(i.editReply).toHaveBeenCalledWith({ content: 'Only the opener or staff can close this ticket.', components: [] })
+    const [t] = await db.select().from(tickets).where(eq(tickets.id, s.ticketId))
+    expect(t.status).not.toBe('closed')
+    expect(t.discordChannelId).toBe(s.channel.id)
+    expect(s.channel.deleted).toBe(false)
+    expect(s.opener.sentDMs).toHaveLength(0)
+  })
+
+  it('a crafted customId naming another ticket does not help: access comes from the channel', async () => {
+    const s = await ticketWithAddedOutsider()
+    const i = buttonInteraction(s.guild, s.channel, s.outsider, `tk:close_confirm:${s.ticketId + 999}`)
+    await executeCloseConfirm({ interaction: i as any, ticketId: s.ticketId + 999 })
+    expect(i.editReply).toHaveBeenCalledWith({ content: 'Only the opener or staff can close this ticket.', components: [] })
+    expect(s.channel.deleted).toBe(false)
+  })
+
+  it('the category-staff manager can still close through the confirm button', async () => {
+    const s = await ticketWithAddedOutsider()
+    const i = buttonInteraction(s.guild, s.channel, s.manager, `tk:close_confirm:${s.ticketId}`)
+    await executeCloseConfirm({ interaction: i as any, ticketId: s.ticketId })
+    expect(i.editReply).not.toHaveBeenCalledWith(expect.objectContaining({ content: 'Only the opener or staff can close this ticket.' }))
+    const [t] = await db.select().from(tickets).where(eq(tickets.id, s.ticketId))
+    expect(t.status).toBe('closed')
+    expect(t.closedByUserId).toBe(await userIdFor(s.manager.id))
+    expect(s.channel.deleted).toBe(true)
+  })
+
+  function slashClose(s: Awaited<ReturnType<typeof ticketWithAddedOutsider>>, member: FakeMember) {
+    return {
+      inGuild: () => true,
+      guild: s.guild,
+      channelId: s.channel.id,
+      channel: s.channel,
+      user: { id: member.id },
+      client: s.client,
+      options: { getSubcommand: () => 'close' },
+      reply: vi.fn(async () => {}),
+      editReply: vi.fn(async () => {}),
+      deferReply: vi.fn(async () => {}),
+    }
+  }
+
+  it('/tickets close shows the confirm button ephemerally to staff, and refuses the added outsider', async () => {
+    const s = await ticketWithAddedOutsider()
+    const staff = slashClose(s, s.manager)
+    await executeTickets(staff as any)
+    expect(staff.reply).toHaveBeenCalledTimes(1)
+    const payload = (staff.reply.mock.calls[0] as any)[0]
+    expect(payload.flags & MessageFlags.Ephemeral).toBe(MessageFlags.Ephemeral)
+    expect(componentsJson(payload)).toContain(`tk:close_confirm:${s.ticketId}`)
+    expect(s.channel.sent.some((m) => componentsJson(m).includes('tk:close_confirm:'))).toBe(false)
+
+    const outsider = slashClose(s, s.outsider)
+    await executeTickets(outsider as any)
+    expect(outsider.reply).toHaveBeenCalledWith({ content: 'Only the opener or staff can close this ticket.', ephemeral: true })
+    expect(s.channel.deleted).toBe(false)
   })
 })
 
