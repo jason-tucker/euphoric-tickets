@@ -260,9 +260,9 @@ Derived from `src/config/env.ts` (Zod-validated at startup) plus `LEADER_ELECTIO
 | `SUDO_ROLE_IDS` | No | Comma-separated role snowflakes treated as bot owners everywhere. |
 | `SUDO_USER_IDS` | No | Comma-separated user snowflakes treated as bot owners everywhere. |
 | `BOT_OWNER_ID` | No | User snowflake that receives a startup "bot is up" DM. |
-| `WEB_BASE_URL` | No | Public URL of the web companion — used in every link shown to people (close DMs, welcome cards) and as the notify-bridge fallback. Default `https://tickets.euphoric.fm`. |
-| `WEB_INTERNAL_URL` | No | Private-network URL of the web (e.g. `http://tickets-web:3000`) for bot → web server-to-server calls (the notify bridge). Unset = `WEB_BASE_URL`. |
-| `INTERNAL_TOKEN` | No | Shared secret (min 8 chars) authenticating the web ↔ bot internal HTTP endpoints (`POST /api/internal/dm` and related routes). **When unset the bot falls back to `DISCORD_BOT_TOKEN` as the secret and logs a loud startup warning** — set a dedicated value here and the identical value in the web app to avoid reusing the bot token as an HTTP auth header. |
+| `WEB_BASE_URL` | No | Public URL of the web companion — used in every link shown to people (close DMs, welcome cards). It is also the notify-bridge fallback when `WEB_INTERNAL_URL` is unset, but on `tickets.euphoric.fm` the edge now 404s `^/api/(internal\|v1)/` (Cloudflare tunnel rule #5, 2026-09-27), so that fallback no longer reaches the web there. Default `https://tickets.euphoric.fm`. |
+| `WEB_INTERNAL_URL` | Yes in production | Private-network URL of the web (e.g. `http://tickets-web:3000`) for bot → web server-to-server calls (the notify bridge). Production has used it since v0.8.0. Unset = `WEB_BASE_URL` (see above: blocked at the public edge). |
+| `INTERNAL_TOKEN` | **Yes** | Shared secret authenticating every web ↔ bot internal call (`x-internal-token` on `POST /api/internal/*` and on the bot → web notify). **At least 32 characters** (`openssl rand -hex 32`), the identical value in the web app. Env validation fails and the bot exits at boot when it is unset, empty or short. There is **no** `DISCORD_BOT_TOKEN` fallback (removed in v0.8.2, plan P1c). |
 | `INTERNAL_PORT` | No | Port the bot's internal HTTP server binds. Keep on the private Docker network — never publish it to the host. Default `8787`. |
 | `LEADER_ELECTION` | No | Set to `off` to skip the Postgres advisory-lock leader-election wait on single-VPS deploys (read via `process.env`, not the Zod schema). |
 | `UPTIME_KUMA_PUSH_URL` | No | Uptime Kuma push URL for health heartbeats. |
@@ -273,7 +273,7 @@ Derived from `src/config/env.ts` (Zod-validated at startup) plus `LEADER_ELECTIO
 
 ```bash
 pnpm install
-cp .env.example .env   # fill at minimum: DISCORD_BOT_TOKEN, DISCORD_CLIENT_ID, GUILD_ID, DATABASE_URL
+cp .env.example .env   # fill at minimum: DISCORD_BOT_TOKEN, DISCORD_CLIENT_ID, GUILD_ID, DATABASE_URL, INTERNAL_TOKEN (>= 32 chars)
 
 pnpm dev               # tsx watch — restarts on file change
 pnpm commands:deploy   # register slash commands in GUILD_ID (run once, or after adding/removing commands)
@@ -292,7 +292,7 @@ point at a throwaway database — never the shared one.
 
 ## Internal HTTP bridge
 
-`src/bot/internalHttp.ts` exposes a small authenticated HTTP server (bound to `INTERNAL_PORT`, default 8787) that the web calls to trigger actions through the bot's gateway connection. All routes require the `x-internal-token` header to match `INTERNAL_TOKEN` (falling back to `DISCORD_BOT_TOKEN` when `INTERNAL_TOKEN` is unset — see the warning above). Keep this server on the private Docker network; never publish the port to the host.
+`src/bot/internalHttp.ts` exposes a small authenticated HTTP server (bound to `INTERNAL_PORT`, default 8787) that the web calls to trigger actions through the bot's gateway connection. All routes require the `x-internal-token` header to match the dedicated `INTERNAL_TOKEN` (constant-time compare; there is no bot-token fallback, and the bot will not boot without a valid token). Keep this server on the private Docker network; never publish the port to the host. Never use `DISCORD_BOT_TOKEN` as an internal secret.
 
 Current endpoints:
 
@@ -324,6 +324,6 @@ Rules:
 
 `integration_only` categories (`ticket_categories.integration_only`) can only be opened through the Integration API: `openTicket` refuses them for any other source (panel buttons, including stale panels), panels never render them, and `/tickets convert` refuses them.
 
-The reverse direction — bot → web — is handled by `src/services/notifyBridge.ts`: `dispatchNotify()` POSTs to the web's `/api/internal/notify` (on `WEB_INTERNAL_URL`, falling back to `WEB_BASE_URL`) after Discord-origin ticket events (new ticket, new message relay) so the web can fan out browser and push notifications.
+The reverse direction — bot → web — is handled by `src/services/notifyBridge.ts`: `dispatchNotify()` POSTs to the web's `/api/internal/notify` on `WEB_INTERNAL_URL` (the private Docker network; used in production since v0.8.0) after Discord-origin ticket events (new ticket, new message relay) so the web can fan out browser and push notifications. It authenticates with `INTERNAL_TOKEN` only. The `WEB_BASE_URL` fallback exists in code, but the public edge on `tickets.euphoric.fm` 404s `^/api/(internal|v1)/` (Cloudflare tunnel rule #5, added 2026-09-27), so notify must go over `WEB_INTERNAL_URL`.
 
 **Schema ownership reminder.** The web companion (`euphoric-tickets-web`) runs `drizzle-kit push` on its own container start and is the **single owner of the schema**. This bot mirrors `src/db/schema/*.ts` from the web repo and must never push — its `docker-entrypoint.sh` only runs `exec node dist/index.js`, and the drizzle configs refuse a push without `ALLOW_BOT_SCHEMA_PUSH=1` (throwaway test DB only). Cross-reference: [`euphoric-tickets-web`](https://github.com/jason-tucker/euphoric-tickets-web).

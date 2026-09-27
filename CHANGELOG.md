@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.8.2] — 2026-09-27 — INTERNAL_TOKEN is required; no bot-token fallback
+
+Plan step P1c (vault "EFM Music Portal — Plan" §4.6 step 5). **Deploy after web v0.12.2**, with the same `INTERNAL_TOKEN` (≥ 32 characters) set in both services.
+
+### Security
+- **`INTERNAL_TOKEN` is required, at least 32 characters.** `src/config/env.ts` validates it with zod (`min(32)`); an unset, empty or short token fails env validation and the bot exits 1 at boot. Error messages never echo the value.
+- **No `DISCORD_BOT_TOKEN` fallback.** The internal HTTP server (`internalSecret` removed from `src/bot/internalHttp.ts`) and the notify bridge (`src/services/notifyBridge.ts`) authenticate with the dedicated token only. Previously an unset `INTERNAL_TOKEN` made the Discord bot token the HTTP shared secret and sent it to the web on every notify. The "INTERNAL_TOKEN is not set" warning branch is gone.
+- **Close-confirm authz (2026-07-21 review finding #2)** was already fixed on main in v0.7.1: `executeCloseConfirm` re-validates the clicker with `resolveTicketAccessByChannel` (`canClose`) and `/tickets close` replies ephemerally; the duplicate `handleTicketCloseConfirm` no longer exists. This release adds regression tests for it.
+
+### Changed
+- `.env.example`, `CLAUDE.md` and `README.md` document `INTERNAL_TOKEN` as required, and record that notify goes over `WEB_INTERNAL_URL` (since v0.8.0) because the public edge on `tickets.euphoric.fm` 404s `^/api/(internal|v1)/` (Cloudflare tunnel rule #5, 2026-09-27).
+- CI: the slash-command deploy step passes a non-secret placeholder `INTERNAL_TOKEN` (as it already does for `DATABASE_URL`), since `registerCommands` imports the validated env.
+
+### Tests
+- 91 tests (was 80): env validation rejects a missing or short token and a child-process boot exits 1 on missing, empty or short; every internal route answers `401` to a wrong, truncated, missing, empty or bot token; a non-staff member added to the ticket channel is refused at `tk:close_confirm` (also with a crafted customId) and nothing is closed; the category-staff manager still closes; `/tickets close` shows the confirm button only ephemerally.
+
+v0.8.2 · a4d8ea0
+
 ## [0.8.1] — 2026-09-27 — Integration API follow-ups
 
 ### Fixed
