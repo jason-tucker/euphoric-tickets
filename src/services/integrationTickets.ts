@@ -76,7 +76,9 @@ export function parseOpenRequest(raw: unknown): OpenRequest | null {
   if (typeof b.businessId !== 'string' || !UUID_RE.test(b.businessId)) return null
   if (!str(b.categoryKey, 100)) return null
   if (typeof b.openerDiscordId !== 'string' || !SNOWFLAKE_RE.test(b.openerDiscordId)) return null
-  if (!str(b.subject, 100)) return null
+  // Stored exactly as the web sent it, trimmed; blank after trimming → 400
+  // (never the silent `<key> from <user>` fallback).
+  if (!str(b.subject, 100) || b.subject.trim().length === 0) return null
   if (!str(b.externalRef, 100)) return null
   const card = parseCard(b.card)
   if (card === undefined) return null
@@ -87,7 +89,7 @@ export function parseOpenRequest(raw: unknown): OpenRequest | null {
     businessId: b.businessId,
     categoryKey: b.categoryKey,
     openerDiscordId: b.openerDiscordId,
-    subject: b.subject,
+    subject: b.subject.trim(),
     card,
     externalRef: b.externalRef,
   }

@@ -354,7 +354,18 @@ describe('open — opener and category errors', () => {
     const s = await setup()
     const body = openBody({ integration: s.integration, business: s.business, category: s.category, openerDiscordId: s.opener.id })
     expect((await handleIntegrationOpen(s.client, { ...body, subject: 'x'.repeat(101) })).status).toBe(400)
+    expect(await handleIntegrationOpen(s.client, { ...body, subject: '   ' })).toEqual({ status: 400, body: { error: 'validation' } })
+    expect(await handleIntegrationOpen(s.client, { ...body, subject: '\n\t ' })).toEqual({ status: 400, body: { error: 'validation' } })
+    expect(s.guild.liveTextChannels()).toHaveLength(0)
     expect((await handleIntegrationOpen(s.client, { ...body, card: { title: 't', lines: Array(26).fill('a') } })).status).toBe(400)
+  })
+
+  it('stores the subject as sent, trimmed', async () => {
+    const s = await setup()
+    const body = openBody({ integration: s.integration, business: s.business, category: s.category, openerDiscordId: s.opener.id, subject: '  Batch 12  ' })
+    const res = await handleIntegrationOpen(s.client, body)
+    const [t] = await db.select().from(tickets).where(eq(tickets.id, res.body.ticketId as number))
+    expect(t.subject).toBe('Batch 12')
   })
 
   it('uses the business passed by id, never the guild default team', async () => {
