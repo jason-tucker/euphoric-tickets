@@ -5,7 +5,7 @@ import { and, eq } from 'drizzle-orm'
 import { db } from '../src/db/client'
 import { auditLogs, integrationOpenClaims, integrations, tickets } from '../src/db/schema'
 import { handleIntegrationOpen, handleWebhookEnsure } from '../src/services/integrationTickets'
-import { ensureTicketWebhook } from '../src/services/ticketService'
+import { channelSlugForRef, ensureTicketWebhook } from '../src/services/ticketService'
 import { safeLinkUrl } from '../src/services/ticketRenderer'
 import { createInternalServer } from '../src/bot/internalHttp'
 import { componentsJson, fakeClient, seedTeam, snow, textDisplays, type FakeTextChannel, type FakeWebhook } from './fakes'
@@ -45,7 +45,9 @@ describe('POST /api/internal/tickets/open — happy path', () => {
     expect(ch.parentId).toBe(s.parentId)
     // Per-staff-role overwrites + opener + @everyone deny.
     expect(ch.overwrites.map((o) => o.id).sort()).toEqual([s.guild.id, s.opener.id, STAFF_ROLE].sort())
-    expect(ch.name).toBe(`ticket-${res.body.ticketId}-songwriter`)
+    // Named after the integration ref, not the opener's username.
+    expect(ch.name).toBe(`ticket-${res.body.ticketId}-${channelSlugForRef(body.externalRef)}`)
+    expect(ch.name).not.toContain('songwriter')
 
     const [t] = await db.select().from(tickets).where(eq(tickets.id, res.body.ticketId as number))
     expect(t.integrationId).toBe(s.integration.id)
@@ -769,3 +771,14 @@ describe('internal HTTP bridge — body decoding', () => {
   })
 })
 
+
+describe('channelSlugForRef', () => {
+  it('turns integration refs into channel-name suffixes', () => {
+    expect(channelSlugForRef('batch:7')).toBe('batch-7')
+    expect(channelSlugForRef('request:12')).toBe('request-12')
+    expect(channelSlugForRef('Event:3')).toBe('event-3')
+    expect(channelSlugForRef('::')).toBe('integration')
+    expect(channelSlugForRef('x'.repeat(39) + ':1').length).toBeLessThanOrEqual(40)
+    expect(channelSlugForRef('x'.repeat(39) + ':1')).not.toMatch(/-$/)
+  })
+})
