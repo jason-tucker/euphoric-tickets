@@ -49,6 +49,19 @@ function truncate(s: string, n: number): string {
   return s.length > n ? s.slice(0, n - 1) + '…' : s
 }
 
+// `batch:7` → `batch-7`; `request:12` → `request-12`. Falls back to
+// `integration` when the ref has no usable characters.
+export function channelSlugForRef(externalRef: string): string {
+  return (
+    externalRef
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 40)
+      .replace(/-+$/, '') || 'integration'
+  )
+}
+
 export async function openTicket(opts: {
   guild: Guild
   opener: GuildMember
@@ -186,7 +199,11 @@ export async function openTicket(opts: {
     }
   }
 
-  const safeName = opener.user.username.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 20) || 'user'
+  // Integration tickets are named after the integration's own reference
+  // (`batch:7` → `ticket-149-batch-7`), never the opener's username.
+  const safeName = isIntegration
+    ? channelSlugForRef(opts.externalRef!)
+    : opener.user.username.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 20) || 'user'
   const baseName = `ticket-${safeName}`
 
   const permissionOverwrites = [
@@ -279,7 +296,7 @@ export async function openTicket(opts: {
     return { ok: false, reason: 'Ticket insert failed.', code: 'insert_failed' }
   }
 
-  await channel.setName(`ticket-${row.id}-${safeName}`).catch(() => {})
+  await channel.setName(`ticket-${row.id}-${safeName}`.slice(0, 100)).catch(() => {})
 
   // Integration tickets ALWAYS get a channel webhook (the web posts integration
   // messages through it). Mandatory but non-fatal: on failure it stays null and

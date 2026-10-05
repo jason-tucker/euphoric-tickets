@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.8.4] — 2026-10-05 — Integration ticket channels are named after their ref, not the opener
+
+### Changed
+- **Integration ticket channel names.** `openTicket()` (`src/services/ticketService.ts`) names Integration API tickets `ticket-<id>-<ref>` from the integration's `externalRef` (new `channelSlugForRef()`: lowercased, non-alphanumerics → `-`, max 40 chars), so an EFM Music Portal batch opens as `ticket-149-batch-7` and requests as `ticket-150-request-12` instead of `ticket-149-<discord username>`. The pre-insert placeholder name uses the ref too, so the username never appears. Panel/slash-command tickets keep `ticket-<id>-<username>`. No schema change; no web deploy needed.
+
+### Tests
+- 102 tests (was 101): the integration-open parity test asserts the ref-based name and that the username is absent; new `channelSlugForRef` unit test.
+
 ## [0.8.3] — 2026-09-27 — Per-category "ping staff roles when a ticket opens"
 
 **Deploy after web v0.12.3.** The web owns the schema and adds `ticket_categories.ping_staff_on_open`; this bot selects whole category rows, so it would fail on a database without the column. Deploy web v0.12.3 first, confirm `ticket_categories.ping_staff_on_open` exists, then deploy this bot.
