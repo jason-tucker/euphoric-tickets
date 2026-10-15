@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Collection } from 'discord.js'
-import { createPaste } from '../src/services/copiumService'
+import { addToAlbum, createPaste } from '../src/services/copiumService'
 import { renderTranscriptText } from '../src/services/transcriptService'
 import { env } from '../src/config/env'
 
@@ -23,7 +23,7 @@ describe('copiumService.createPaste', () => {
       { title: 'Ticket #1', content: 'hello' },
       { fetch, token: TOKEN, apiBase: 'https://copium.pics/', linkHost: 'i.tucker.host' },
     )
-    expect(url).toBe('https://i.tucker.host/i/qVx79Apa')
+    expect(url).toEqual({ id: 'qVx79Apa', url: 'https://i.tucker.host/i/qVx79Apa' })
     expect(fetch).toHaveBeenCalledTimes(1)
     const [endpoint, init] = fetch.mock.calls[0] as unknown as [string, RequestInit]
     expect(endpoint).toBe('https://copium.pics/api/paste')
@@ -39,9 +39,10 @@ describe('copiumService.createPaste', () => {
 
   it('returns pageUrl unchanged when no link host is configured', async () => {
     const fetch = vi.fn(async () => jsonResponse(201, { pageUrl: 'https://tucker.copium.pics/i/abc' }))
-    expect(await createPaste({ title: 't', content: 'c' }, { fetch, token: TOKEN, linkHost: undefined })).toBe(
-      'https://tucker.copium.pics/i/abc',
-    )
+    expect(await createPaste({ title: 't', content: 'c' }, { fetch, token: TOKEN, linkHost: undefined })).toEqual({
+      id: null,
+      url: 'https://tucker.copium.pics/i/abc',
+    })
   })
 
   it('no token → no network call, null', async () => {
@@ -92,6 +93,54 @@ describe('copiumService.createPaste', () => {
     for (const fetch of cases) {
       expect(await createPaste({ title: 't', content: 'c' }, { fetch, token: TOKEN })).toBeNull()
     }
+  })
+})
+
+describe('copiumService.addToAlbum', () => {
+  it('POSTs the ids to /api/albums/<id>/images and returns true when added >= 1', async () => {
+    const fetch = vi.fn(async () => jsonResponse(200, { added: 1, album: { id: 'alb1' } }))
+    expect(await addToAlbum('alb1', ['qVx79Apa'], { fetch, token: TOKEN, apiBase: 'https://copium.pics/' })).toBe(true)
+    const [endpoint, init] = fetch.mock.calls[0] as unknown as [string, RequestInit]
+    expect(endpoint).toBe('https://copium.pics/api/albums/alb1/images')
+    expect(init.method).toBe('POST')
+    expect(init.headers).toEqual({
+      Authorization: `Bearer ${TOKEN}`,
+      'Content-Type': 'application/json',
+      'X-Requested-With': 'fetch',
+    })
+    expect(JSON.parse(String(init.body))).toEqual({ imageIds: ['qVx79Apa'] })
+    expect(init.signal).toBeInstanceOf(AbortSignal)
+  })
+
+  it('no token → no request, false', async () => {
+    const fetch = vi.fn()
+    expect(await addToAlbum('alb1', ['x'], { fetch, token: undefined })).toBe(false)
+    expect(fetch).not.toHaveBeenCalled()
+  })
+
+  it('non-2xx, added: 0, bad JSON, throw or timeout → false; the token is never logged', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const cases: (typeof globalThis.fetch)[] = [
+      vi.fn(async () => jsonResponse(404, { error: 'Album not found' })),
+      vi.fn(async () => jsonResponse(200, { added: 0 })),
+      vi.fn(async () => new Response('nope', { status: 200 })),
+      vi.fn(async () => {
+        throw new TypeError('fetch failed')
+      }),
+      vi.fn(
+        (_url: string, init?: RequestInit) =>
+          new Promise<Response>((_resolve, reject) => {
+            init?.signal?.addEventListener('abort', () => reject(init.signal!.reason))
+          }),
+      ) as unknown as typeof globalThis.fetch,
+    ]
+    for (const fetch of cases) {
+      expect(await addToAlbum('alb1', ['x'], { fetch, token: TOKEN, timeoutMs: 20 })).toBe(false)
+    }
+    const logged = warn.mock.calls.map((c) => c.join(' ')).join('\n')
+    expect(logged).toContain('404')
+    expect(logged).toContain('timeout')
+    expect(logged).not.toContain(TOKEN)
   })
 })
 

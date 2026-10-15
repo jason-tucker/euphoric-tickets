@@ -353,11 +353,20 @@ describe('POST /api/internal/tickets/close', () => {
 describe('Close → copium.pics transcript paste', () => {
   const PAGE_URL = 'https://tucker.copium.pics/i/qVx79Apa'
   let pasteCalls: { url: string; init: RequestInit }[]
+  let albumCalls: { url: string; init: RequestInit }[]
 
-  function routeCopium(response: () => Response | Promise<Response>) {
+  function routeCopium(
+    response: () => Response | Promise<Response>,
+    albumResponse: () => Response | Promise<Response> = () => new Response(JSON.stringify({ added: 1, album: {} }), { status: 200 }),
+  ) {
     pasteCalls = []
+    albumCalls = []
     vi.mocked(globalThis.fetch).mockImplementation(async (input: any, init?: any) => {
       const url = String(input instanceof Request ? input.url : input)
+      if (url.startsWith('https://copium.pics/api/albums/')) {
+        albumCalls.push({ url, init })
+        return albumResponse()
+      }
       if (url.startsWith('https://copium.pics/')) {
         pasteCalls.push({ url, init })
         return response()
@@ -370,7 +379,7 @@ describe('Close → copium.pics transcript paste', () => {
     Object.assign(env, { COPIUM_TOKEN: 'copium-test-token', COPIUM_LINK_HOST: 'i.tucker.host' })
   })
   afterEach(() => {
-    Object.assign(env, { COPIUM_TOKEN: undefined, COPIUM_LINK_HOST: undefined })
+    Object.assign(env, { COPIUM_TOKEN: undefined, COPIUM_LINK_HOST: undefined, COPIUM_ALBUM_ID: undefined })
   })
 
   async function close(s: Awaited<ReturnType<typeof openIntegrationTicket>>) {
@@ -446,5 +455,53 @@ describe('Close → copium.pics transcript paste', () => {
     expect(pasteCalls).toHaveLength(0)
     expect(t.externalTranscriptUrl).toBeNull()
     expect(s.opener.sentDMs[0].content).not.toContain('Transcript:')
+  })
+
+  it('album: a successful paste is added to COPIUM_ALBUM_ID (exact URL, headers, body)', async () => {
+    Object.assign(env, { COPIUM_ALBUM_ID: 'alb123' })
+    const s = await openIntegrationTicket()
+    routeCopium(() => new Response(JSON.stringify({ id: 'qVx79Apa', pageUrl: PAGE_URL }), { status: 201 }))
+    const t = await close(s)
+    expect(albumCalls).toHaveLength(1)
+    expect(albumCalls[0].url).toBe('https://copium.pics/api/albums/alb123/images')
+    expect(albumCalls[0].init.method).toBe('POST')
+    expect(albumCalls[0].init.headers).toEqual({
+      Authorization: 'Bearer copium-test-token',
+      'Content-Type': 'application/json',
+      'X-Requested-With': 'fetch',
+    })
+    expect(JSON.parse(String(albumCalls[0].init.body))).toEqual({ imageIds: ['qVx79Apa'] })
+    expect(t.externalTranscriptUrl).toBe('https://i.tucker.host/i/qVx79Apa')
+    expect(s.opener.sentDMs[0].content).toContain('Transcript: https://i.tucker.host/i/qVx79Apa')
+  })
+
+  it('album: no COPIUM_ALBUM_ID → no album request', async () => {
+    const s = await openIntegrationTicket()
+    routeCopium(() => new Response(JSON.stringify({ id: 'qVx79Apa', pageUrl: PAGE_URL }), { status: 201 }))
+    await close(s)
+    expect(pasteCalls).toHaveLength(1)
+    expect(albumCalls).toHaveLength(0)
+  })
+
+  it('album: a failed album add keeps the DM link, the column and the close', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    Object.assign(env, { COPIUM_ALBUM_ID: 'alb123' })
+    for (const albumResponse of [
+      () => new Response(JSON.stringify({ error: 'Album not found' }), { status: 404 }),
+      () => new Response(JSON.stringify({ added: 0 }), { status: 200 }),
+      (): Response => {
+        throw new TypeError('fetch failed')
+      },
+    ]) {
+      const s = await openIntegrationTicket()
+      routeCopium(() => new Response(JSON.stringify({ id: 'qVx79Apa', pageUrl: PAGE_URL }), { status: 201 }), albumResponse)
+      const t = await close(s)
+      expect(albumCalls).toHaveLength(1)
+      expect(t.status).toBe('closed')
+      expect(t.externalTranscriptUrl).toBe('https://i.tucker.host/i/qVx79Apa')
+      expect(s.channel.deleted).toBe(true)
+      expect(s.opener.sentDMs).toHaveLength(1)
+      expect(s.opener.sentDMs[0].content).toContain('Transcript: https://i.tucker.host/i/qVx79Apa')
+    }
   })
 })

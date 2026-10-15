@@ -43,14 +43,10 @@ export function rewriteLinkHost(pageUrl: string, linkHost: string | undefined): 
   return u.toString()
 }
 
-export async function createPaste(
-  input: { title: string; content: string },
-  deps: Partial<CopiumDeps> = {},
-): Promise<string | null> {
-  const d = { ...defaultDeps(), ...deps }
-  if (!d.token) return null
-
-  const endpoint = `${d.apiBase.replace(/\/+$/, '')}/api/paste`
+// POST a JSON body to the copium API. Returns the 2xx Response, or null after
+// logging a warning (status / timeout / network — never the token or body).
+async function copiumPost(d: CopiumDeps, path: string, body: unknown, what: string): Promise<Response | null> {
+  const endpoint = `${d.apiBase.replace(/\/+$/, '')}${path}`
   let res: Response
   try {
     res = await d.fetch(endpoint, {
@@ -60,42 +56,78 @@ export async function createPaste(
         'Content-Type': 'application/json',
         'X-Requested-With': 'fetch',
       },
-      body: JSON.stringify({ title: input.title, content: input.content, language: 'plaintext' }),
+      body: JSON.stringify(body),
       signal: AbortSignal.timeout(d.timeoutMs),
     })
   } catch (err) {
     const name = typeof (err as { name?: unknown })?.name === 'string' ? (err as { name: string }).name : ''
-    log.warn('copium paste request failed', {
+    log.warn(`copium ${what} request failed`, {
       reason: name === 'TimeoutError' ? 'timeout' : 'network',
       err: name || String(err),
     })
     return null
   }
-
   if (!res.ok) {
     // The body is a short {"error": "..."} — safe to log a slice of it; it
     // never echoes the token.
     const detail = await res.text().catch(() => '')
-    log.warn('copium paste rejected', { status: res.status, error: detail.slice(0, 200) })
+    log.warn(`copium ${what} rejected`, { status: res.status, error: detail.slice(0, 200) })
     return null
   }
+  return res
+}
 
-  let pageUrl: unknown
+async function readJson(res: Response, what: string): Promise<Record<string, unknown> | null> {
   try {
-    pageUrl = ((await res.json()) as { pageUrl?: unknown } | null)?.pageUrl
+    const json = (await res.json()) as unknown
+    if (json && typeof json === 'object') return json as Record<string, unknown>
   } catch {
-    log.warn('copium paste: response was not JSON', { status: res.status })
-    return null
+    // fall through
   }
+  log.warn(`copium ${what}: response was not a JSON object`, { status: res.status })
+  return null
+}
+
+// Returns the paste's link (host rewritten) and its id (needed for album adds;
+// null if copium omitted it), or null on any failure.
+export async function createPaste(
+  input: { title: string; content: string },
+  deps: Partial<CopiumDeps> = {},
+): Promise<{ id: string | null; url: string } | null> {
+  const d = { ...defaultDeps(), ...deps }
+  if (!d.token) return null
+
+  const res = await copiumPost(d, '/api/paste', { title: input.title, content: input.content, language: 'plaintext' }, 'paste')
+  if (!res) return null
+  const json = await readJson(res, 'paste')
+  if (!json) return null
+
+  const { pageUrl, id } = json
   if (typeof pageUrl !== 'string' || !pageUrl) {
     log.warn('copium paste: response had no pageUrl', { status: res.status })
     return null
   }
-
   try {
-    return rewriteLinkHost(pageUrl, d.linkHost)
+    return { id: typeof id === 'string' && id ? id : null, url: rewriteLinkHost(pageUrl, d.linkHost) }
   } catch {
     log.warn('copium paste: pageUrl was not a valid URL', { status: res.status })
     return null
   }
+}
+
+// Adds uploads/pastes to a copium album. true only on 2xx with added >= 1.
+// Never throws.
+export async function addToAlbum(albumId: string, ids: string[], deps: Partial<CopiumDeps> = {}): Promise<boolean> {
+  const d = { ...defaultDeps(), ...deps }
+  if (!d.token || !albumId || ids.length === 0) return false
+
+  const res = await copiumPost(d, `/api/albums/${encodeURIComponent(albumId)}/images`, { imageIds: ids }, 'album add')
+  if (!res) return false
+  const json = await readJson(res, 'album add')
+  if (!json) return false
+  if (typeof json.added !== 'number' || json.added < 1) {
+    log.warn('copium album add: nothing was added', { status: res.status, added: json.added ?? null })
+    return false
+  }
+  return true
 }

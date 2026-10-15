@@ -16,7 +16,7 @@ import { getBusinessByGuildId } from './businessResolver'
 import { getOrCreateUserByDiscordId, getDiscordIdForUserId } from './userResolver'
 import { buildTicketWelcome, renderFirstMessage } from './ticketRenderer'
 import { fetchAllMessages, renderTranscriptHtml, renderTranscriptText } from './transcriptService'
-import { createPaste, isCopiumEnabled } from './copiumService'
+import { addToAlbum, createPaste, isCopiumEnabled } from './copiumService'
 import { logTicketEvent } from './ticketLogger'
 import { log } from './logger'
 import { canOpenCategory, staffRoleIdsForCategory } from './permissions'
@@ -669,8 +669,10 @@ export async function closeTicket(opts: {
     // copium.pics text paste (v0.9.0) — before the DM so the link can go in it.
     // Best-effort and bounded by the paste timeout: on any failure the link is
     // simply omitted. Runs whether or not the opener can be DMed, so the web
-    // dashboard still gets the link.
-    const pasteUrl = await postTranscriptPaste(ticket.id, transcriptInput, closedAt)
+    // dashboard still gets the link. The album add (if configured) runs in the
+    // background and is awaited after the DM so it never delays the link.
+    const paste = await postTranscriptPaste(ticket.id, transcriptInput, closedAt)
+    const pasteUrl = paste?.url ?? null
 
     if (opener) {
       const dmFile = new AttachmentBuilder(buf, {
@@ -695,6 +697,7 @@ export async function closeTicket(opts: {
           })
         })
     }
+    await paste?.albumAdd
 
     void logTicketEvent({
       guild,
@@ -728,25 +731,35 @@ export async function closeTicket(opts: {
 
 // Posts the plain-text transcript to copium.pics and records the link in
 // tickets.external_transcript_url — only when that column is still null, so a
-// TicketTool import's transcript URL is never overwritten. Never throws.
+// TicketTool import's transcript URL is never overwritten. When
+// COPIUM_ALBUM_ID is set it also starts adding the paste to that album and
+// returns the (never-rejecting) promise so the caller can await it after the
+// DM. Never throws; an album failure only logs.
 async function postTranscriptPaste(
   ticketId: number,
   input: Parameters<typeof renderTranscriptText>[0],
   closedAt: Date,
-): Promise<string | null> {
+): Promise<{ url: string; albumAdd: Promise<unknown> } | null> {
   if (!isCopiumEnabled()) return null
   try {
-    const url = await createPaste({
+    const paste = await createPaste({
       title: `Ticket #${ticketId} — ${input.channelName} (${input.guildName})`,
       content: renderTranscriptText({ ...input, closedAt }),
     })
-    if (!url) return null
+    if (!paste) return null
+    const { url, id } = paste
+    const albumId = env.COPIUM_ALBUM_ID
+    if (albumId && !id) log.warn('Transcript paste had no id; skipping album add', { ticketId })
+    const albumAdd =
+      albumId && id
+        ? addToAlbum(albumId, [id]).catch((err) => log.warn('Adding transcript paste to album failed', { ticketId, err: String(err) }))
+        : Promise.resolve()
     await db
       .update(tickets)
       .set({ externalTranscriptUrl: url })
       .where(and(eq(tickets.id, ticketId), isNull(tickets.externalTranscriptUrl)))
       .catch((err) => log.warn('Saving transcript paste URL failed', { ticketId, err: String(err) }))
-    return url
+    return { url, albumAdd }
   } catch (err) {
     log.warn('Transcript paste failed', { ticketId, err: String(err) })
     return null

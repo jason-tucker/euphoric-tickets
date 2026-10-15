@@ -17,6 +17,7 @@ for (const key of [
   'COPIUM_TOKEN',
   'COPIUM_API_BASE',
   'COPIUM_LINK_HOST',
+  'COPIUM_ALBUM_ID',
 ]) {
   if (process.env[key] === '') delete process.env[key]
 }
@@ -78,6 +79,9 @@ export const envSchema = z.object({
     .string()
     .regex(/^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*(:\d{1,5})?$/i, 'must be a hostname like i.tucker.host')
     .optional(),
+  // Optional copium album id: successful transcript pastes are also added to
+  // this album. Unset = skip the album step.
+  COPIUM_ALBUM_ID: z.string().optional(),
 })
 
 const parsed = envSchema.safeParse(process.env)
