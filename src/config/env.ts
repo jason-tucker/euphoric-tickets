@@ -14,6 +14,9 @@ for (const key of [
   'WEB_BASE_URL',
   'WEB_INTERNAL_URL',
   'INTERNAL_TOKEN',
+  'COPIUM_TOKEN',
+  'COPIUM_API_BASE',
+  'COPIUM_LINK_HOST',
 ]) {
   if (process.env[key] === '') delete process.env[key]
 }
@@ -62,6 +65,19 @@ export const envSchema = z.object({
     .min(INTERNAL_TOKEN_MIN_LENGTH, `INTERNAL_TOKEN must be at least ${INTERNAL_TOKEN_MIN_LENGTH} characters`),
   // Port the bot's tiny internal HTTP server binds (DM dispatch). Default 8787.
   INTERNAL_PORT: z.coerce.number().int().positive().default(8787),
+  // copium.pics paste upload token (Bearer). When set, closing a ticket also
+  // posts a plain-text transcript paste and links it in the opener DM + stores
+  // it in tickets.external_transcript_url. Unset = feature off, no network call.
+  // Secret: never log it.
+  COPIUM_TOKEN: z.string().optional(),
+  // copium.pics API origin. Default https://copium.pics.
+  COPIUM_API_BASE: z.string().url().default('https://copium.pics'),
+  // Optional custom domain for paste links (e.g. i.tucker.host): the host of
+  // the returned pageUrl is replaced with this one.
+  COPIUM_LINK_HOST: z
+    .string()
+    .regex(/^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*(:\d{1,5})?$/i, 'must be a hostname like i.tucker.host')
+    .optional(),
 })
 
 const parsed = envSchema.safeParse(process.env)

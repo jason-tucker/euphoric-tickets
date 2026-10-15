@@ -15,7 +15,8 @@ import { ticketCategories, type TicketCategory } from '../db/schema/ticketCatego
 import { getBusinessByGuildId } from './businessResolver'
 import { getOrCreateUserByDiscordId, getDiscordIdForUserId } from './userResolver'
 import { buildTicketWelcome, renderFirstMessage } from './ticketRenderer'
-import { fetchAllMessages, renderTranscriptHtml } from './transcriptService'
+import { fetchAllMessages, renderTranscriptHtml, renderTranscriptText } from './transcriptService'
+import { createPaste, isCopiumEnabled } from './copiumService'
 import { logTicketEvent } from './ticketLogger'
 import { log } from './logger'
 import { canOpenCategory, staffRoleIdsForCategory } from './permissions'
@@ -624,11 +625,12 @@ export async function closeTicket(opts: {
 
   // Conditional on not-yet-closed so two concurrent closes (button + web /
   // integration) can't both run the transcript/DM/delete flow.
+  const closedAt = new Date()
   const closedRows = await db
     .update(tickets)
     .set({
       status: 'closed',
-      closedAt: new Date(),
+      closedAt,
       closedByUserId: closerUserId,
       lastActivityAt: new Date(),
     })
@@ -653,15 +655,22 @@ export async function closeTicket(opts: {
     const opener = openerDiscordId
       ? await guild.members.fetch(openerDiscordId).catch(() => null)
       : null
-    const html = renderTranscriptHtml({
+    const transcriptInput = {
       guildName: guild.name,
       channelName: channel.name,
       ticketId: ticket.id,
       openerTag: opener?.user.tag ?? openerDiscordId ?? 'unknown',
       closedByTag: closer.user.tag,
       messages,
-    })
+    }
+    const html = renderTranscriptHtml(transcriptInput)
     const buf = Buffer.from(html, 'utf8')
+
+    // copium.pics text paste (v0.9.0) — before the DM so the link can go in it.
+    // Best-effort and bounded by the paste timeout: on any failure the link is
+    // simply omitted. Runs whether or not the opener can be DMed, so the web
+    // dashboard still gets the link.
+    const pasteUrl = await postTranscriptPaste(ticket.id, transcriptInput, closedAt)
 
     if (opener) {
       const dmFile = new AttachmentBuilder(buf, {
@@ -675,6 +684,7 @@ export async function closeTicket(opts: {
         `Your ticket **#${ticket.id}** in **${guild.name}** was closed by ${closer.user.tag}.` +
         (opts.reason ? `\n\nReason: ${opts.reason.slice(0, 500)}` : '') +
         (webLink ? `\n\nView the conversation on the web: ${webLink}` : '') +
+        (pasteUrl ? `\n\nTranscript: ${pasteUrl}` : '') +
         '\n\nA full transcript is attached.'
       await opener
         .send({ content, files: [dmFile] })
@@ -714,6 +724,33 @@ export async function closeTicket(opts: {
   })
 
   return { ok: true }
+}
+
+// Posts the plain-text transcript to copium.pics and records the link in
+// tickets.external_transcript_url — only when that column is still null, so a
+// TicketTool import's transcript URL is never overwritten. Never throws.
+async function postTranscriptPaste(
+  ticketId: number,
+  input: Parameters<typeof renderTranscriptText>[0],
+  closedAt: Date,
+): Promise<string | null> {
+  if (!isCopiumEnabled()) return null
+  try {
+    const url = await createPaste({
+      title: `Ticket #${ticketId} — ${input.channelName} (${input.guildName})`,
+      content: renderTranscriptText({ ...input, closedAt }),
+    })
+    if (!url) return null
+    await db
+      .update(tickets)
+      .set({ externalTranscriptUrl: url })
+      .where(and(eq(tickets.id, ticketId), isNull(tickets.externalTranscriptUrl)))
+      .catch((err) => log.warn('Saving transcript paste URL failed', { ticketId, err: String(err) }))
+    return url
+  } catch (err) {
+    log.warn('Transcript paste failed', { ticketId, err: String(err) })
+    return null
+  }
 }
 
 async function loadCategoryLabel(categoryId: string | null): Promise<string | null> {

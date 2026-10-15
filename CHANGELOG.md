@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.9.0] — 2026-10-15 — Ticket transcripts are also posted as a copium.pics paste
+
+No schema change (reuses the existing `tickets.external_transcript_url` column); no web deploy required — the web dashboard shows the link once it reads that column.
+
+### Added
+- **copium.pics transcript paste on close.** New `src/services/copiumService.ts` `createPaste({title, content})` POSTs to `<COPIUM_API_BASE>/api/paste` (`Authorization: Bearer`, `language: plaintext`) with a 15 s `AbortSignal.timeout`, and returns the paste's `pageUrl` with its host swapped to `COPIUM_LINK_HOST` when set (e.g. `https://i.tucker.host/i/<id>`). Any failure (non-2xx, timeout, network error, bad JSON, missing `pageUrl`) returns `null` and logs a warning with the status only — never the token or the content.
+- **`renderTranscriptText`** (`src/services/transcriptService.ts`): plain-text transcript (header with ticket #, server, channel, opened by, closed by, closed time in UTC ISO; then `[YYYY-MM-DD HH:MM:SS UTC] tag: content` per message, continuation lines and attachment URLs indented). Capped at 900 KB UTF-8: the oldest messages are kept and the newest dropped, with a `[transcript truncated — N later messages omitted; see attached HTML]` note.
+- **`closeTicket`** (`src/services/ticketService.ts`) posts the paste after rendering the HTML and **before** the opener DM. On success the DM gains `Transcript: <url>` and the URL is saved to `tickets.external_transcript_url` only when that column is null (TicketTool import URLs are never overwritten). The web link line and the `.html` attachment are unchanged. A failed paste just omits the line; close and the DM proceed as before.
+- **Env:** `COPIUM_TOKEN` (optional; unset = feature off, no request), `COPIUM_API_BASE` (default `https://copium.pics`), `COPIUM_LINK_HOST` (optional hostname). All empty-string coerced. Documented in `.env.example`, `README.md` and `CLAUDE.md`.
+
+### Tests
+- 116 tests (was 102). New `test/copiumPaste.test.ts`: request shape + host rewrite, no token → no request, 401 → null without logging the token or content, timeout / thrown fetch / bad JSON / missing or invalid `pageUrl` / 500 → null; text transcript format and byte-cap truncation. `test/closeAndParity.test.ts`: a successful paste puts the link in the DM and sets the column; an existing `external_transcript_url` is kept; a 401 or thrown fetch still closes, deletes the channel and sends the DM without the link; no token → no paste request.
+
 ## [0.8.4] — 2026-10-05 — Integration ticket channels are named after their ref, not the opener
 
 ### Changed

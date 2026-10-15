@@ -108,6 +108,7 @@ its own. TicketTool tickets are **never** closed via euphoric's close flow
 ### Close & transcripts (read this carefully)
 
 - Close renders the HTML transcript with `renderTranscriptHtml` (from `fetchAllMessages`) and **DMs it to the opener** as an `.html` attachment, plus a `WEB_BASE_URL/b/<slug>/tickets/<id>` link when the guild maps to a business. The DM is best-effort — silently skipped if the opener has DMs closed or has left the guild. Then `channel.delete()` removes the channel.
+- **copium.pics paste (v0.9.0).** When `COPIUM_TOKEN` is set, close also renders a plain-text transcript (`renderTranscriptText`, capped at ~900 KB — oldest messages kept, newest dropped with a "truncated" note) and posts it with `createPaste` (`src/services/copiumService.ts`, 15 s timeout) **before** the DM. On success the paste page URL (host swapped to `COPIUM_LINK_HOST` when set) is added to the DM as `Transcript: <url>` and saved to `tickets.external_transcript_url` **only if that column is null** (TicketTool imports keep their URL); the web dashboard reads it from there. Any failure just omits the link — the HTML attachment and web link remain, and close never fails because of the paste. Never log the token or paste content.
 - There is **no transcript channel and no log channel.** `getTranscriptChannelId` and `getLogChannelId` in `src/services/settingsService.ts` are **no-ops that return `null`** (the columns don't exist on the web schema). `logTicketEvent` in `src/services/ticketLogger.ts` is likewise a **no-op** that still accepts the event shape so a per-business log channel can be reinstated later in one file without revisiting callsites. Do **not** document or rely on a transcript/log-channel post.
 - A web-side close instead *archives* the channel to the team's closed category (`discord_closed_category_id`) so it can be reopened; the bot-side close deletes.
 
@@ -141,7 +142,7 @@ the web UI, which owns the richer config.
 | `/tickets settings [team]` | Manage Server | Edit a team's DB-backed config via ephemeral panel + modal. Multi-team servers pick a team with `team:` |
 | `/tickets claim` / `/tickets unclaim` | Staff | Take or release the current ticket |
 | `/tickets assign <user>` | Staff | Assign the current ticket to a staff member |
-| `/tickets close` | Staff or opener | Close the current ticket — DMs the rendered transcript to the opener (best-effort) and **deletes** the channel. No transcript/log channel |
+| `/tickets close` | Staff or opener | Close the current ticket — DMs the rendered transcript to the opener (best-effort, plus a copium.pics paste link when `COPIUM_TOKEN` is set) and **deletes** the channel. No transcript/log channel |
 | `/tickets add <user>` | Staff | Add a member to the current ticket (permission overwrite) |
 | `/tickets remove <user>` | Staff | Remove a member (the opener cannot be removed — close instead) |
 | `/tickets rename <name>` | Staff | Rename the channel; input is slugified, keeps the `ticket-<id>-` prefix |
@@ -266,6 +267,9 @@ Derived from `src/config/env.ts` (Zod-validated at startup) plus `LEADER_ELECTIO
 | `INTERNAL_PORT` | No | Port the bot's internal HTTP server binds. Keep on the private Docker network — never publish it to the host. Default `8787`. |
 | `LEADER_ELECTION` | No | Set to `off` to skip the Postgres advisory-lock leader-election wait on single-VPS deploys (read via `process.env`, not the Zod schema). |
 | `UPTIME_KUMA_PUSH_URL` | No | Uptime Kuma push URL for health heartbeats. |
+| `COPIUM_TOKEN` | No | copium.pics upload token (Bearer). Set = close posts a text-transcript paste, links it in the opener DM and stores it in `tickets.external_transcript_url`. Unset = feature off (no request). Secret — never logged. |
+| `COPIUM_API_BASE` | No | copium.pics API origin. Default `https://copium.pics`. |
+| `COPIUM_LINK_HOST` | No | Hostname swapped into paste links (e.g. `i.tucker.host` → `https://i.tucker.host/i/<id>`). Unset = the link copium returns. |
 
 ---
 
