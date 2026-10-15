@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { eq } from 'drizzle-orm'
 import { ChannelType, MessageFlags, PermissionFlagsBits } from 'discord.js'
 import { db } from '../src/db/client'
+import { env } from '../src/config/env'
 import { auditLogs, integrations, tickets, users } from '../src/db/schema'
 import { handleIntegrationClose, handleIntegrationOpen } from '../src/services/integrationTickets'
 import { handleTicketClaim } from '../src/interactions/buttons/ticketClaim'
@@ -347,3 +348,183 @@ describe('POST /api/internal/tickets/close', () => {
   })
 })
 
+
+// v0.9.0: closing also posts a copium.pics text paste and links it in the DM.
+describe('Close → copium.pics transcript paste', () => {
+  const PAGE_URL = 'https://tucker.copium.pics/i/qVx79Apa'
+  let pasteCalls: { url: string; init: RequestInit }[]
+  let albumCalls: { url: string; init: RequestInit }[]
+
+  function routeCopium(
+    response: () => Response | Promise<Response>,
+    albumResponse: () => Response | Promise<Response> = () => new Response(JSON.stringify({ added: 1, album: {} }), { status: 200 }),
+  ) {
+    pasteCalls = []
+    albumCalls = []
+    vi.mocked(globalThis.fetch).mockImplementation(async (input: any, init?: any) => {
+      const url = String(input instanceof Request ? input.url : input)
+      if (url.startsWith('https://copium.pics/api/albums/')) {
+        albumCalls.push({ url, init })
+        return albumResponse()
+      }
+      if (url.startsWith('https://copium.pics/')) {
+        pasteCalls.push({ url, init })
+        return response()
+      }
+      return new Response('{}', { status: 200 })
+    })
+  }
+
+  beforeEach(() => {
+    Object.assign(env, { COPIUM_TOKEN: 'copium-test-token', COPIUM_LINK_HOST: 'i.tucker.host' })
+  })
+  afterEach(() => {
+    Object.assign(env, { COPIUM_TOKEN: undefined, COPIUM_LINK_HOST: undefined, COPIUM_ALBUM_ID: undefined })
+  })
+
+  async function close(s: Awaited<ReturnType<typeof openIntegrationTicket>>) {
+    const res = await handleIntegrationClose(s.client, { ticketId: s.ticketId, businessId: s.second.business.id, integrationId: s.integration.id })
+    expect(res.status).toBe(200)
+    const [t] = await db.select().from(tickets).where(eq(tickets.id, s.ticketId))
+    return t
+  }
+
+  it('success: the DM carries the paste link (custom host) and the column is set', async () => {
+    const s = await openIntegrationTicket()
+    routeCopium(() => new Response(JSON.stringify({ id: 'qVx79Apa', pageUrl: PAGE_URL }), { status: 201 }))
+    const t = await close(s)
+
+    expect(pasteCalls).toHaveLength(1)
+    const body = JSON.parse(String(pasteCalls[0].init.body))
+    expect(body.title).toBe(`Ticket #${s.ticketId} — ${s.channel.name} (Test Guild)`)
+    expect(body.language).toBe('plaintext')
+    expect(body.content).toContain(`Ticket #${s.ticketId}`)
+
+    expect(t.status).toBe('closed')
+    expect(t.externalTranscriptUrl).toBe('https://i.tucker.host/i/qVx79Apa')
+    expect(s.channel.deleted).toBe(true)
+    expect(s.opener.sentDMs).toHaveLength(1)
+    const dm = s.opener.sentDMs[0].content!
+    expect(dm).toContain(`https://tickets.example.test/b/${s.second.business.slug}/tickets/${s.ticketId}`)
+    expect(dm).toContain('\n\nTranscript: https://i.tucker.host/i/qVx79Apa')
+    expect(dm).toContain('A full transcript is attached.')
+    expect((s.opener.sentDMs[0] as any).files).toHaveLength(1)
+  })
+
+  it('never overwrites an existing external_transcript_url (TicketTool imports)', async () => {
+    const s = await openIntegrationTicket()
+    await db.update(tickets).set({ externalTranscriptUrl: 'https://tickettool.example/t/1' }).where(eq(tickets.id, s.ticketId))
+    routeCopium(() => new Response(JSON.stringify({ pageUrl: PAGE_URL }), { status: 201 }))
+    const t = await close(s)
+    expect(t.externalTranscriptUrl).toBe('https://tickettool.example/t/1')
+    expect(s.opener.sentDMs[0].content).toContain('Transcript: https://i.tucker.host/i/qVx79Apa')
+  })
+
+  it('failure (401): close still completes, the DM is still sent without the link, column untouched', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const s = await openIntegrationTicket()
+    routeCopium(() => new Response(JSON.stringify({ error: 'Upload token is invalid or was revoked' }), { status: 401 }))
+    const t = await close(s)
+    expect(pasteCalls).toHaveLength(1)
+    expect(t.status).toBe('closed')
+    expect(t.externalTranscriptUrl).toBeNull()
+    expect(s.channel.deleted).toBe(true)
+    expect(s.opener.sentDMs).toHaveLength(1)
+    expect(s.opener.sentDMs[0].content).not.toContain('Transcript:')
+    expect(s.opener.sentDMs[0].content).toContain('A full transcript is attached.')
+  })
+
+  it('failure (fetch throws): close still completes and the DM is still sent', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const s = await openIntegrationTicket()
+    routeCopium(() => {
+      throw new TypeError('fetch failed')
+    })
+    const t = await close(s)
+    expect(t.status).toBe('closed')
+    expect(t.externalTranscriptUrl).toBeNull()
+    expect(s.opener.sentDMs).toHaveLength(1)
+    expect(s.opener.sentDMs[0].content).not.toContain('Transcript:')
+  })
+
+  it('disabled (no COPIUM_TOKEN): no paste request at all', async () => {
+    Object.assign(env, { COPIUM_TOKEN: undefined })
+    const s = await openIntegrationTicket()
+    routeCopium(() => new Response(JSON.stringify({ pageUrl: PAGE_URL }), { status: 201 }))
+    const t = await close(s)
+    expect(pasteCalls).toHaveLength(0)
+    expect(t.externalTranscriptUrl).toBeNull()
+    expect(s.opener.sentDMs[0].content).not.toContain('Transcript:')
+  })
+
+  it('album: a successful paste is added to COPIUM_ALBUM_ID (exact URL, headers, body)', async () => {
+    Object.assign(env, { COPIUM_ALBUM_ID: 'alb123' })
+    const s = await openIntegrationTicket()
+    routeCopium(() => new Response(JSON.stringify({ id: 'qVx79Apa', pageUrl: PAGE_URL }), { status: 201 }))
+    const t = await close(s)
+    // Fire-and-forget: the request is issued, but close does not wait for it.
+    await vi.waitFor(() => expect(albumCalls).toHaveLength(1))
+    expect(albumCalls[0].url).toBe('https://copium.pics/api/albums/alb123/images')
+    expect(albumCalls[0].init.method).toBe('POST')
+    expect(albumCalls[0].init.headers).toEqual({
+      Authorization: 'Bearer copium-test-token',
+      'Content-Type': 'application/json',
+      'X-Requested-With': 'fetch',
+    })
+    expect(JSON.parse(String(albumCalls[0].init.body))).toEqual({ imageIds: ['qVx79Apa'] })
+    expect(t.externalTranscriptUrl).toBe('https://i.tucker.host/i/qVx79Apa')
+    expect(s.opener.sentDMs[0].content).toContain('Transcript: https://i.tucker.host/i/qVx79Apa')
+  })
+
+  it('album: no COPIUM_ALBUM_ID → no album request', async () => {
+    const s = await openIntegrationTicket()
+    routeCopium(() => new Response(JSON.stringify({ id: 'qVx79Apa', pageUrl: PAGE_URL }), { status: 201 }))
+    await close(s)
+    await new Promise((r) => setTimeout(r, 50))
+    expect(pasteCalls).toHaveLength(1)
+    expect(albumCalls).toHaveLength(0)
+  })
+
+  it('album: a failed album add keeps the DM link, the column and the close', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    Object.assign(env, { COPIUM_ALBUM_ID: 'alb123' })
+    for (const albumResponse of [
+      () => new Response(JSON.stringify({ error: 'Album not found' }), { status: 404 }),
+      () => new Response(JSON.stringify({ added: 0 }), { status: 200 }),
+      (): Response => {
+        throw new TypeError('fetch failed')
+      },
+    ]) {
+      const s = await openIntegrationTicket()
+      routeCopium(() => new Response(JSON.stringify({ id: 'qVx79Apa', pageUrl: PAGE_URL }), { status: 201 }), albumResponse)
+      const t = await close(s)
+      await vi.waitFor(() => expect(albumCalls).toHaveLength(1))
+      expect(t.status).toBe('closed')
+      expect(t.externalTranscriptUrl).toBe('https://i.tucker.host/i/qVx79Apa')
+      expect(s.channel.deleted).toBe(true)
+      expect(s.opener.sentDMs).toHaveLength(1)
+      expect(s.opener.sentDMs[0].content).toContain('Transcript: https://i.tucker.host/i/qVx79Apa')
+    }
+  })
+
+  it('album: close completes (channel deleted, DM sent, row closed) while the album request is still pending', async () => {
+    Object.assign(env, { COPIUM_ALBUM_ID: 'alb123' })
+    const s = await openIntegrationTicket()
+    let albumSettled = false
+    routeCopium(
+      () => new Response(JSON.stringify({ id: 'qVx79Apa', pageUrl: PAGE_URL }), { status: 201 }),
+      // Never resolves (ignores the abort signal too).
+      () => new Promise<Response>(() => {}).finally(() => (albumSettled = true)),
+    )
+    const t = await close(s)
+    expect(albumCalls).toHaveLength(1)
+    expect(albumSettled).toBe(false)
+    expect(t.status).toBe('closed')
+    expect(t.externalTranscriptUrl).toBe('https://i.tucker.host/i/qVx79Apa')
+    expect(s.channel.deleted).toBe(true)
+    expect(s.opener.sentDMs).toHaveLength(1)
+    expect(s.opener.sentDMs[0].content).toContain('Transcript: https://i.tucker.host/i/qVx79Apa')
+    const audits = await db.select().from(auditLogs).where(eq(auditLogs.ticketId, s.ticketId))
+    expect(audits.some((a) => a.action === 'closed')).toBe(true)
+  })
+})

@@ -78,3 +78,70 @@ ${rows.join('\n')}
 </body>
 </html>`
 }
+
+// Plain-text transcript for the copium.pics paste (v0.9.0). Same inputs as
+// renderTranscriptHtml. Capped at TEXT_TRANSCRIPT_MAX_BYTES (UTF-8): messages
+// are kept oldest-first and the newest ones are dropped once the cap is hit,
+// with a note saying how many were omitted (the HTML attachment stays
+// complete). The paste host's size limit is unknown; 900 KB keeps us well
+// under a typical 1 MB request cap.
+export const TEXT_TRANSCRIPT_MAX_BYTES = 900_000
+
+function utcStamp(ms: number): string {
+  return new Date(ms).toISOString().replace('T', ' ').slice(0, 19) + ' UTC'
+}
+
+export function renderTranscriptText(opts: {
+  guildName: string
+  channelName: string
+  ticketId: number
+  openerTag: string
+  closedByTag: string
+  messages: Message[]
+  closedAt?: Date
+  maxBytes?: number
+}): string {
+  const { guildName, channelName, ticketId, openerTag, closedByTag, messages } = opts
+  const maxBytes = opts.maxBytes ?? TEXT_TRANSCRIPT_MAX_BYTES
+  const header =
+    [
+      `Ticket #${ticketId}`,
+      `Server:    ${guildName}`,
+      `Channel:   #${channelName}`,
+      `Opened by: ${openerTag}`,
+      `Closed by: ${closedByTag}`,
+      `Closed at: ${(opts.closedAt ?? new Date()).toISOString()}`,
+      `Messages:  ${messages.length}`,
+      '',
+      '----------------------------------------',
+      '',
+    ].join('\n') + '\n'
+
+  const blocks = messages.map((m) => {
+    const lines = (m.content || '(no text)').split('\n')
+    const out = [`[${utcStamp(Number(m.createdTimestamp))}] ${m.author.tag}: ${lines[0]}`]
+    for (const l of lines.slice(1)) out.push(`    ${l}`)
+    for (const a of m.attachments.values()) out.push(`    [attachment] ${a.name ?? 'attachment'}: ${a.url}`)
+    return out.join('\n') + '\n'
+  })
+
+  const truncationNote = (n: number) =>
+    `\n[transcript truncated — ${n} later message${n === 1 ? '' : 's'} omitted; see attached HTML]\n`
+  // Reserve room for the note (its count has at most as many digits as the total).
+  const reserve = Buffer.byteLength(truncationNote(messages.length), 'utf8')
+
+  let size = Buffer.byteLength(header, 'utf8')
+  const kept: string[] = []
+  for (let i = 0; i < blocks.length; i++) {
+    const b = Buffer.byteLength(blocks[i], 'utf8')
+    const remainingAfter = blocks.length - i - 1
+    // The last block needs no note reserve if everything fits.
+    const limit = remainingAfter === 0 ? maxBytes : maxBytes - reserve
+    if (size + b > limit) {
+      return header + kept.join('') + truncationNote(blocks.length - i)
+    }
+    kept.push(blocks[i])
+    size += b
+  }
+  return header + kept.join('')
+}

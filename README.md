@@ -24,7 +24,7 @@ Highlights:
 - **Auto-provisioning.** The bot works on any server with zero manual setup. A `guildCreate` handler creates a team (`businesses` row) the moment the bot joins a guild, and a startup backfill does the same for every guild it's already in. Both go through the idempotent `ensureBusinessForGuild` — a no-op once a guild has at least one team — so the server shows up in the unified web dashboard immediately, no `/admin business create` required.
 - **Multi-team.** A single Discord server can host more than one team (a "business" row). Ticket categories, panels and settings are resolved per team — by the channel, the panel message, or the ticket category — so two teams can share a guild without colliding. `/panel post` and `/tickets settings` take an optional autocompleted `team:` option to target a specific team. (Auto-provisioning only ever creates the first team for a guild; extra teams are still added by hand or on the web.)
 - **Lifecycle synced to the web.** Claim, unclaim, assign, add/remove member, rename, close, reopen and change-category all reflect to the web in real time via Postgres triggers the web installs.
-- **DM transcript on close.** Closing a ticket renders an HTML transcript, DMs it to the opener (best-effort, with a link to the web ticket), then deletes the channel. There is no dedicated transcript/log channel.
+- **DM transcript on close.** Closing a ticket renders an HTML transcript, DMs it to the opener (best-effort, with a link to the web ticket), then deletes the channel. With `COPIUM_TOKEN` set it also posts a plain-text transcript to copium.pics and puts that link in the DM and in `tickets.external_transcript_url` (best-effort; never blocks the close). There is no dedicated transcript/log channel.
 - **Convert + backfill.** `/tickets convert` turns an ordinary channel into a ticket and backfills up to 100 recent messages (with attachments).
 - **TicketTool coexistence.** A team can run in `tickettool` mode, where the bot ingests and controls a third-party TicketTool bot's tickets instead of opening its own.
 - **Resilient.** Startup resync (orphan scan, panel reconcile, message backfill), a persistent `bot_errors` log, and optional single-leader election for multi-VPS deploys.
@@ -103,6 +103,10 @@ Environment variables, derived from `src/config/env.ts` (plus `LEADER_ELECTION`,
 | `SUDO_USER_IDS` | No | Comma-separated user snowflakes treated as bot owners everywhere. |
 | `BOT_OWNER_ID` | No | User snowflake that receives a startup "bot is up" DM. |
 | `UPTIME_KUMA_PUSH_URL` | No | Uptime Kuma push URL for health heartbeats. |
+| `COPIUM_TOKEN` | No | copium.pics upload token. When set, closing a ticket also posts a plain-text transcript paste, links it in the opener DM and stores it in `tickets.external_transcript_url` for the web dashboard. Unset = off (no request). Never logged. |
+| `COPIUM_API_BASE` | No | copium.pics API origin. Default `https://copium.pics`. |
+| `COPIUM_LINK_HOST` | No | Hostname swapped into paste links, e.g. `i.tucker.host`. Unset = the link copium returns. |
+| `COPIUM_ALBUM_ID` | No | copium album id; each successful transcript paste is also added to it (best-effort). Unset = no album step. |
 | `LEADER_ELECTION` | No | Set to `off` to skip the Postgres advisory-lock leader wait on single-VPS deploys (read via `process.env`, not the Zod schema). |
 | `POSTGRES_PASSWORD` | compose | Used by `docker-compose.yml` to build `DATABASE_URL` for the shared DB; must match the web stack. |
 | `GIT_SHA` / `SOURCE_COMMIT` | No | Optional build SHA shown in the startup DM and version footer. |
