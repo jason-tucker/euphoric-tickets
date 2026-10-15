@@ -462,7 +462,8 @@ describe('Close → copium.pics transcript paste', () => {
     const s = await openIntegrationTicket()
     routeCopium(() => new Response(JSON.stringify({ id: 'qVx79Apa', pageUrl: PAGE_URL }), { status: 201 }))
     const t = await close(s)
-    expect(albumCalls).toHaveLength(1)
+    // Fire-and-forget: the request is issued, but close does not wait for it.
+    await vi.waitFor(() => expect(albumCalls).toHaveLength(1))
     expect(albumCalls[0].url).toBe('https://copium.pics/api/albums/alb123/images')
     expect(albumCalls[0].init.method).toBe('POST')
     expect(albumCalls[0].init.headers).toEqual({
@@ -479,6 +480,7 @@ describe('Close → copium.pics transcript paste', () => {
     const s = await openIntegrationTicket()
     routeCopium(() => new Response(JSON.stringify({ id: 'qVx79Apa', pageUrl: PAGE_URL }), { status: 201 }))
     await close(s)
+    await new Promise((r) => setTimeout(r, 50))
     expect(pasteCalls).toHaveLength(1)
     expect(albumCalls).toHaveLength(0)
   })
@@ -496,12 +498,33 @@ describe('Close → copium.pics transcript paste', () => {
       const s = await openIntegrationTicket()
       routeCopium(() => new Response(JSON.stringify({ id: 'qVx79Apa', pageUrl: PAGE_URL }), { status: 201 }), albumResponse)
       const t = await close(s)
-      expect(albumCalls).toHaveLength(1)
+      await vi.waitFor(() => expect(albumCalls).toHaveLength(1))
       expect(t.status).toBe('closed')
       expect(t.externalTranscriptUrl).toBe('https://i.tucker.host/i/qVx79Apa')
       expect(s.channel.deleted).toBe(true)
       expect(s.opener.sentDMs).toHaveLength(1)
       expect(s.opener.sentDMs[0].content).toContain('Transcript: https://i.tucker.host/i/qVx79Apa')
     }
+  })
+
+  it('album: close completes (channel deleted, DM sent, row closed) while the album request is still pending', async () => {
+    Object.assign(env, { COPIUM_ALBUM_ID: 'alb123' })
+    const s = await openIntegrationTicket()
+    let albumSettled = false
+    routeCopium(
+      () => new Response(JSON.stringify({ id: 'qVx79Apa', pageUrl: PAGE_URL }), { status: 201 }),
+      // Never resolves (ignores the abort signal too).
+      () => new Promise<Response>(() => {}).finally(() => (albumSettled = true)),
+    )
+    const t = await close(s)
+    expect(albumCalls).toHaveLength(1)
+    expect(albumSettled).toBe(false)
+    expect(t.status).toBe('closed')
+    expect(t.externalTranscriptUrl).toBe('https://i.tucker.host/i/qVx79Apa')
+    expect(s.channel.deleted).toBe(true)
+    expect(s.opener.sentDMs).toHaveLength(1)
+    expect(s.opener.sentDMs[0].content).toContain('Transcript: https://i.tucker.host/i/qVx79Apa')
+    const audits = await db.select().from(auditLogs).where(eq(auditLogs.ticketId, s.ticketId))
+    expect(audits.some((a) => a.action === 'closed')).toBe(true)
   })
 })
