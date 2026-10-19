@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { eq } from 'drizzle-orm'
-import { ChannelType, MessageFlags, PermissionFlagsBits } from 'discord.js'
+import { ChannelType, Collection, MessageFlags, PermissionFlagsBits } from 'discord.js'
 import { db } from '../src/db/client'
-import { env } from '../src/config/env'
+import { env, envSchema } from '../src/config/env'
 import { auditLogs, integrations, tickets, users } from '../src/db/schema'
 import { handleIntegrationClose, handleIntegrationOpen } from '../src/services/integrationTickets'
 import { handleTicketClaim } from '../src/interactions/buttons/ticketClaim'
@@ -11,6 +11,9 @@ import { execute as executeTickets, executeCloseConfirm } from '../src/commands/
 import { componentsJson, fakeClient, seedTeam, type FakeGuild, type FakeMember, type FakeTextChannel } from './fakes'
 import { openBody, seedIntegration, stubFetch } from './helpers'
 import { LIBRARY_COMPONENTS_SRC, PINNED_COMPONENTS_SRC, TRANSCRIPT_CSP } from '../src/services/transcriptSanitizer'
+import * as transcriptSanitizer from '../src/services/transcriptSanitizer'
+import * as transcriptService from '../src/services/transcriptService'
+import { sampleConversation } from './fixtures/sampleConversation'
 
 const ADMIN_ROLE = '200000000000000010' // team admin_role_ids ("Ticket Master")
 const MANAGER_ROLE = '200000000000000011' // category staff only (EFM Managers)
@@ -659,5 +662,106 @@ describe('Close → copium.pics transcript paste', () => {
     expect(s.opener.sentDMs).toHaveLength(0)
     expect(t.status).toBe('closed')
     expect(s.channel.deleted).toBe(true)
+  })
+
+  // Fallback paths: the DM still gets an HTML file (the legacy, escaped one)
+  // and copium the text paste; close always completes.
+  const pasteOk = () => new Response(JSON.stringify({ id: 'qVx79Apa', pageUrl: PAGE_URL }), { status: 201 })
+  async function expectLegacyFallback(s: Awaited<ReturnType<typeof openIntegrationTicket>>, t: Awaited<ReturnType<typeof close>>) {
+    expect(uploadCalls).toHaveLength(0)
+    expect(pasteCalls).toHaveLength(1)
+    expect(JSON.parse(String(pasteCalls[0].init.body)).language).toBe('plaintext')
+    expect(t.status).toBe('closed')
+    expect(t.externalTranscriptUrl).toBe('https://i.tucker.host/i/qVx79Apa')
+    expect(s.channel.deleted).toBe(true)
+    expect(s.opener.sentDMs).toHaveLength(1)
+    const dm = s.opener.sentDMs[0] as { content?: string; files?: { attachment: unknown; name: string }[] }
+    expect(dm.content).toContain('\n\nTranscript: https://i.tucker.host/i/qVx79Apa')
+    expect(dm.content).toContain('A full transcript is attached.')
+    expect(dm.files).toHaveLength(1)
+    expect(dm.files![0].name).toBe(`ticket-${s.ticketId}-${s.channel.name}.html`)
+    const attached = String(dm.files![0].attachment)
+    expect(attached).toContain(`<h1>Ticket #${s.ticketId} — #${s.channel.name}</h1>`) // legacy renderTranscriptHtml
+    expect(attached).not.toContain('<discord-messages')
+    expect(attached).not.toMatch(/<script/i)
+    return attached
+  }
+
+  it('Discord-style render throws → legacy HTML attached, text paste used, no HTML upload, close completes', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    vi.spyOn(transcriptService, 'renderDiscordTranscriptHtml').mockRejectedValue(new Error('render boom'))
+    const s = await openIntegrationTicket()
+    routeCopium(pasteOk, undefined, htmlUploadOk)
+    const t = await close(s)
+    await expectLegacyFallback(s, t)
+    expect(warn.mock.calls.map((c) => String(c[0])).some((l) => l.includes('Discord-style transcript render failed'))).toBe(true)
+  })
+
+  it('sanitizer verification throws → same legacy fallback', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const sanitize = vi.spyOn(transcriptSanitizer, 'sanitizeTranscriptHtml').mockImplementation(() => {
+      throw new Error('transcript sanitizer: output failed verification (2 script elements)')
+    })
+    const s = await openIntegrationTicket()
+    routeCopium(pasteOk, undefined, htmlUploadOk)
+    const t = await close(s)
+    expect(sanitize).toHaveBeenCalledTimes(1)
+    await expectLegacyFallback(s, t)
+    expect(warn.mock.calls.map((c) => String(c[0])).some((l) => l.includes('output failed verification'))).toBe(true)
+  })
+
+  describe('TRANSCRIPT_DISCORD_MAX_MESSAGES', () => {
+    afterEach(() => {
+      Object.assign(env, { TRANSCRIPT_DISCORD_MAX_MESSAGES: 600 })
+    })
+
+    // The fixture's 4 real discord.js messages, served by the fake channel.
+    async function ticketWithFourMessages() {
+      const s = await openIntegrationTicket()
+      const conv = sampleConversation()
+      s.channel.messages = { fetch: async () => new Collection(conv.messages.map((m) => [m.id, m])) } as any
+      return { s, conv }
+    }
+
+    it('defaults to 600', () => {
+      expect(envSchema.parse({ ...process.env, TRANSCRIPT_DISCORD_MAX_MESSAGES: undefined }).TRANSCRIPT_DISCORD_MAX_MESSAGES).toBe(600)
+      expect(envSchema.parse({ ...process.env, TRANSCRIPT_DISCORD_MAX_MESSAGES: '25' }).TRANSCRIPT_DISCORD_MAX_MESSAGES).toBe(25)
+      expect(envSchema.safeParse({ ...process.env, TRANSCRIPT_DISCORD_MAX_MESSAGES: '-1' }).success).toBe(false)
+    })
+
+    it('over the cap: renderer never runs, no HTML upload, text paste + legacy attachment, info line with the count', async () => {
+      const info = vi.spyOn(console, 'log').mockImplementation(() => {})
+      const render = vi.spyOn(transcriptService, 'renderDiscordTranscriptHtml')
+      Object.assign(env, { TRANSCRIPT_DISCORD_MAX_MESSAGES: 3 })
+      const { s, conv } = await ticketWithFourMessages()
+      try {
+        routeCopium(pasteOk, undefined, htmlUploadOk)
+        const t = await close(s)
+        expect(render).not.toHaveBeenCalled()
+        const attached = await expectLegacyFallback(s, t)
+        expect(attached).toContain('That worked, thank you!')
+        expect(JSON.parse(String(pasteCalls[0].init.body)).content).toContain('That worked, thank you!')
+        const line = info.mock.calls.map((c) => String(c[0])).find((l) => l.includes('over the Discord-style message cap'))
+        expect(line).toBeDefined()
+        expect(line).toContain('"messages":4')
+        expect(line).toContain('"cap":3')
+      } finally {
+        await conv.client.destroy()
+      }
+    })
+
+    it('exactly at the cap (count === cap) the Discord-style transcript is still rendered and uploaded', async () => {
+      // The fake channel has 0 messages; cap 0 → 0 > 0 is false.
+      Object.assign(env, { TRANSCRIPT_DISCORD_MAX_MESSAGES: 0 })
+      const render = vi.spyOn(transcriptService, 'renderDiscordTranscriptHtml')
+      const s = await openIntegrationTicket()
+      routeCopium(pasteOk, undefined, htmlUploadOk)
+      const t = await close(s)
+      expect(render).toHaveBeenCalledTimes(1)
+      expect(uploadCalls).toHaveLength(1)
+      expect(pasteCalls).toHaveLength(0)
+      expect(t.externalTranscriptUrl).toBe(HTML_LINK)
+      expect(String((s.opener.sentDMs[0] as any).files[0].attachment)).toContain('<discord-messages')
+    })
   })
 })

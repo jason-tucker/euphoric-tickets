@@ -108,6 +108,7 @@ Environment variables, derived from `src/config/env.ts` (plus `LEADER_ELECTION`,
 | `COPIUM_UPLOAD_BASE` | No | copium upload origin for HTML transcripts (copium's `uploadBaseUrl`). Default `https://v.copium.pics`. |
 | `COPIUM_LINK_HOST` | No | Hostname swapped into text-paste links, e.g. `i.tucker.host`. Not applied to HTML transcript links. Unset = the link copium returns. |
 | `COPIUM_ALBUM_ID` | No | copium album id; each successful transcript upload/paste is also added to it (best-effort). Unset = no album step. |
+| `TRANSCRIPT_DISCORD_MAX_MESSAGES` | No | Tickets with more messages than this skip the Discord-style HTML transcript (memory-heavy): the DM gets the plain legacy HTML and copium the text paste (no HTML upload). Default `600`. |
 | `LEADER_ELECTION` | No | Set to `off` to skip the Postgres advisory-lock leader wait on single-VPS deploys (read via `process.env`, not the Zod schema). |
 | `POSTGRES_PASSWORD` | compose | Used by `docker-compose.yml` to build `DATABASE_URL` for the shared DB; must match the web stack. |
 | `GIT_SHA` / `SOURCE_COMMIT` | No | Optional build SHA shown in the startup DM and version footer. |

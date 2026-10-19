@@ -19,6 +19,7 @@ for (const key of [
   'COPIUM_UPLOAD_BASE',
   'COPIUM_LINK_HOST',
   'COPIUM_ALBUM_ID',
+  'TRANSCRIPT_DISCORD_MAX_MESSAGES',
 ]) {
   if (process.env[key] === '') delete process.env[key]
 }
@@ -86,6 +87,11 @@ export const envSchema = z.object({
   // Optional copium album id: successful transcript pastes are also added to
   // this album. Unset = skip the album step.
   COPIUM_ALBUM_ID: z.string().optional(),
+  // Tickets with more messages than this skip the Discord-style HTML
+  // transcript (discord-html-transcripts + sanitizer peak at ~620 MB RSS for
+  // 2000 messages; the bot VPS has ~350 MB free): the DM gets the legacy HTML
+  // and copium the text paste. Real tickets: median 26, p95 168, max 402.
+  TRANSCRIPT_DISCORD_MAX_MESSAGES: z.coerce.number().int().nonnegative().default(600),
 })
 
 const parsed = envSchema.safeParse(process.env)

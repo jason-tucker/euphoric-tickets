@@ -668,12 +668,24 @@ export async function closeTicket(opts: {
     // `attachment` variant (CSP meta, pinned components script) is the DM
     // file, the `upload` variant goes to copium. If rendering or sanitizing
     // throws, the DM falls back to the legacy HTML and copium to the text paste.
-    const discordHtml = await renderDiscordTranscriptHtml({ channel, messages, ticketId: ticket.id, filename }).catch(
-      (err) => {
-        log.warn('Discord-style transcript render failed; using the legacy HTML', { ticketId: ticket.id, err: String(err) })
-        return null
-      },
-    )
+    // Over TRANSCRIPT_DISCORD_MAX_MESSAGES the Discord-style renderer is
+    // skipped entirely (memory: it peaks at hundreds of MB for long tickets):
+    // legacy HTML for the DM, text paste for copium.
+    const discordCap = env.TRANSCRIPT_DISCORD_MAX_MESSAGES
+    const overCap = messages.length > discordCap
+    if (overCap) {
+      log.info('Transcript over the Discord-style message cap; using the legacy HTML and the text paste', {
+        ticketId: ticket.id,
+        messages: messages.length,
+        cap: discordCap,
+      })
+    }
+    const discordHtml = overCap
+      ? null
+      : await renderDiscordTranscriptHtml({ channel, messages, ticketId: ticket.id, filename }).catch((err) => {
+          log.warn('Discord-style transcript render failed; using the legacy HTML', { ticketId: ticket.id, err: String(err) })
+          return null
+        })
     const html = discordHtml?.attachment ?? renderTranscriptHtml(transcriptInput)
     const buf = Buffer.from(html, 'utf8')
 
