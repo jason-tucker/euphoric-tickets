@@ -7,6 +7,7 @@ import {
   SeparatorBuilder,
   SeparatorSpacingSize,
   TextDisplayBuilder,
+  escapeMarkdown,
 } from 'discord.js'
 import type { PanelCategory } from './settingsService'
 import type { IntegrationCard } from '../db/schema/tickets'
@@ -17,10 +18,15 @@ function sep() {
   return new SeparatorBuilder().setSpacing(SeparatorSpacingSize.Small).setDivider(true)
 }
 
-export function buildPanelMessage(categories: PanelCategory[]) {
+// Panels are one team per message, so the heading names the team
+// (`## 🎫 Open a Ticket · <Team>`; markdown in the name is escaped). Without a
+// name the heading is just `## 🎫 Open a Ticket`.
+export function buildPanelMessage(categories: PanelCategory[], teamName?: string | null) {
+  const name = teamName?.trim()
+  const heading = name ? `## 🎫 Open a Ticket · ${escapeMarkdown(name)}` : '## 🎫 Open a Ticket'
   const container = new ContainerBuilder()
     .setAccentColor(ACCENT)
-    .addTextDisplayComponents(new TextDisplayBuilder().setContent('## 🎫 Open a Ticket'))
+    .addTextDisplayComponents(new TextDisplayBuilder().setContent(heading))
     .addSeparatorComponents(sep())
     .addTextDisplayComponents(new TextDisplayBuilder().setContent(
       'Need help? Pick a category below to open a private ticket with the staff team.\n' +
@@ -41,6 +47,23 @@ export function buildPanelMessage(categories: PanelCategory[]) {
   return {
     flags: MessageFlags.IsComponentsV2,
     components: [container, row],
+  }
+}
+
+// Payload for EDITING an existing message into a panel — /panel refresh and
+// adopting a legacy message (e.g. an old classic-embed message from earlier
+// bot software). Discord only accepts the IS_COMPONENTS_V2 flag on an edit
+// when the message's legacy fields are cleared: content and embeds (stickers
+// and polls can't be on a bot-edited message anyway) must be empty, so they
+// are explicitly cleared here (discord.js sends content: null as ""), and
+// attachments: [] drops old files, which a V2 message could only show via file
+// components. The flag can never be removed again once set.
+export function buildPanelEditPayload(categories: PanelCategory[], teamName?: string | null) {
+  return {
+    ...buildPanelMessage(categories, teamName),
+    content: null,
+    embeds: [],
+    attachments: [],
   }
 }
 

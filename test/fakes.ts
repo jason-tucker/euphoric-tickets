@@ -67,6 +67,21 @@ export class FakeWebhook {
   }
 }
 
+export class FakeMessage {
+  edits: any[] = []
+  constructor(
+    public id: string,
+    public author: { id: string },
+    public channel: FakeTextChannel,
+    public legacy: { content?: string; embeds?: unknown[] } = {},
+  ) {}
+  async edit(payload: any): Promise<this> {
+    if (this.channel.failEdit) throw this.channel.failEdit
+    this.edits.push(payload)
+    return this
+  }
+}
+
 export class FakeTextChannel {
   type = ChannelType.GuildText
   sent: Sent[] = []
@@ -74,7 +89,24 @@ export class FakeTextChannel {
   deleted = false
   client = { user: { id: BOT_ID } }
   failCreateWebhook = false
-  messages = { fetch: async () => new Collection<string, never>() }
+  // Existing messages (e.g. a legacy message to adopt as a panel). fetch(id)
+  // returns one (10008 Unknown Message otherwise); fetch(options) — the
+  // transcript's paginated history — stays an empty page.
+  messageMap = new Map<string, FakeMessage>()
+  failEdit: Error | null = null
+  messages = {
+    fetch: async (arg?: unknown): Promise<any> => {
+      if (typeof arg !== 'string') return new Collection<string, never>()
+      const m = this.messageMap.get(arg)
+      if (!m) throw Object.assign(new Error('Unknown Message'), { code: 10008 })
+      return m
+    },
+  }
+  addMessage(authorId: string, legacy: { content?: string; embeds?: unknown[] } = {}): FakeMessage {
+    const m = new FakeMessage(snow(), { id: authorId }, this, legacy)
+    this.messageMap.set(m.id, m)
+    return m
+  }
   permissionOverwrites = { edit: async () => {}, delete: async () => {} }
   constructor(
     public guild: FakeGuild,
@@ -86,6 +118,9 @@ export class FakeTextChannel {
   ) {}
   isTextBased(): boolean {
     return true
+  }
+  permissionsFor(): { has: () => boolean } {
+    return { has: () => true }
   }
   // Read by the Discord-style transcript renderer (discord-html-transcripts).
   isDMBased(): boolean {

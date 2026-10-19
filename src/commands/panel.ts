@@ -7,11 +7,12 @@ import {
 } from 'discord.js'
 import { canManageGuildSettings } from '../services/permissions'
 import { getPanelCategories } from '../services/settingsService'
-import { getBusinessesByGuildId } from '../services/businessResolver'
-import { buildPanelMessage } from '../services/ticketRenderer'
+import { getBusinessByGuildId, getBusinessesByGuildId } from '../services/businessResolver'
+import { buildPanelEditPayload } from '../services/ticketRenderer'
+import { postTeamPanel } from '../services/panelService'
 import { db } from '../db/client'
 import { ticketPanels } from '../db/schema/ticketPanels'
-import { businesses } from '../db/schema/businesses'
+import { businesses, type Business } from '../db/schema/businesses'
 import { eq } from 'drizzle-orm'
 
 export const data = new SlashCommandBuilder()
@@ -26,6 +27,12 @@ export const data = new SlashCommandBuilder()
           .setName('team')
           .setDescription('Which team (only needed when this server hosts more than one)')
           .setAutocomplete(true)
+          .setRequired(false),
+      )
+      .addStringOption((opt) =>
+        opt
+          .setName('message_id')
+          .setDescription('Optional: turn an existing message by this bot in this channel into the panel')
           .setRequired(false),
       ),
   )
@@ -108,20 +115,27 @@ async function postPanel(interaction: ChatInputCommandInteraction): Promise<void
     return
   }
 
-  const categories = await getPanelCategories(interaction.guild!.id, business)
-  const payload = buildPanelMessage(categories)
-
-  const sent = await channel.send(payload as any)
-
-  await db.insert(ticketPanels).values({
-    businessId: business.id,
-    guildId: interaction.guildId!,
-    channelId: channel.id,
-    messageId: sent.id,
-    postedByDiscordId: interaction.user.id,
+  const messageId = interaction.options.getString('message_id')?.trim() || null
+  if (messageId && !/^\d{17,20}$/.test(messageId)) {
+    await interaction.editReply('`message_id` must be a message ID (a number like `1195886919469510686`).')
+    return
+  }
+  const out = await postTeamPanel({
+    channel,
+    business,
+    botUserId: interaction.client.user.id,
+    postedBy: interaction.user.id,
+    messageId,
   })
-
-  await interaction.editReply(`✓ Posted **${business.name}** panel in <#${channel.id}> (message \`${sent.id}\`).`)
+  if (!out.ok) {
+    await interaction.editReply(out.message)
+    return
+  }
+  await interaction.editReply(
+    out.adopted
+      ? `✓ Turned message \`${out.messageId}\` in <#${channel.id}> into the **${business.name}** panel.`
+      : `✓ Posted **${business.name}** panel in <#${channel.id}> (message \`${out.messageId}\`).`,
+  )
 }
 
 async function refreshPanel(interaction: ChatInputCommandInteraction): Promise<void> {
@@ -158,13 +172,15 @@ async function refreshPanel(interaction: ChatInputCommandInteraction): Promise<v
 
   // Refresh from the panel's OWN team (multi-team servers), falling back to the
   // guild default for older panels that predate stored team ids.
-  let panelBiz: { id: string } | null = null
+  let panelBiz: Business | null = null
   if (panelRow.businessId) {
     const [biz] = await db.select().from(businesses).where(eq(businesses.id, panelRow.businessId)).limit(1)
     panelBiz = biz ?? null
   }
   const categories = await getPanelCategories(interaction.guild!.id, panelBiz)
-  const payload = buildPanelMessage(categories)
-  await message.edit(payload as any)
+  // Heading names the panel's team; older panels without a stored team use the
+  // guild default team's name (or no suffix when the guild has none).
+  const teamName = (panelBiz ?? (await getBusinessByGuildId(interaction.guild!.id)))?.name ?? null
+  await message.edit(buildPanelEditPayload(categories, teamName) as any)
   await interaction.editReply(`✓ Refreshed panel \`${panelRow.messageId}\` in <#${panelRow.channelId}>.`)
 }

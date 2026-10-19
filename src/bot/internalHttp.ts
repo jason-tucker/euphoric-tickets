@@ -14,6 +14,7 @@ import {
   handleWebhookEnsure,
   type RouteResult,
 } from '../services/integrationTickets'
+import { handlePanelPost } from '../services/panelService'
 
 // P13 (lantern) — tiny internal HTTP server. Exposes POST /api/internal/dm so
 // the web's notification dispatcher can send a Discord DM through the bot
@@ -50,6 +51,9 @@ const INTEGRATION_ROUTES: Record<string, (client: Client, body: unknown) => Prom
   '/api/internal/tickets/open': handleIntegrationOpen,
   '/api/internal/tickets/close': handleIntegrationClose,
   '/api/internal/tickets/webhook/ensure': handleWebhookEnsure,
+  // v0.10.1: post (or adopt an existing bot message as) a team's ticket panel
+  // without a slash command. Same JSON in/out contract as the routes above.
+  '/api/internal/panel/post': handlePanelPost,
 }
 
 // Request body cap, in bytes (the web budgets its open payload under it).

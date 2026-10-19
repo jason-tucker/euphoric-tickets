@@ -88,6 +88,7 @@ describe('internal HTTP: x-internal-token', () => {
     '/api/internal/tickets/open',
     '/api/internal/tickets/close',
     '/api/internal/tickets/webhook/ensure',
+    '/api/internal/panel/post',
   ]
 
   it('every route returns 401 for a wrong, missing, or bot token; the right token passes auth', async () => {

@@ -98,7 +98,7 @@ its own. TicketTool tickets are **never** closed via euphoric's close flow
 
 ### Ticket lifecycle
 
-1. A server manager (anyone with **Manage Server**, a Ticket Master role, or sudo) runs `/panel post` in a channel. Bot posts a Components V2 panel with one "Open Ticket" button per configured category (staff-only categories never get a panel button).
+1. A server manager (anyone with **Manage Server**, a Ticket Master role, or sudo) runs `/panel post` in a channel (or the web/orchestrator calls `POST /api/internal/panel/post`). Bot posts a Components V2 panel, headed with the team's name, with one "Open Ticket" button per configured category (staff-only categories never get a panel button).
 2. Member clicks a category button → `openTicket()` checks the category's `allow_role_ids`, creates a `ticket-<n>-<username>` channel under the category's Discord parent, denies `@everyone`, grants the opener `ViewChannel`+`SendMessages`, grants each staff role view+manage perms.
 3. Bot posts a welcome card in the new channel with **Claim**, **Close**, **Open in web**, and a **Category** select. If the category defines a `first_message_template` it is rendered instead of the default body (placeholders: `{{user}}`, `{{ticketId}}`, `{{subject}}`, `{{category}}`).
 4. Conversation flows both ways: Discord messages relay into `ticket_messages`; web replies arrive in-channel via a per-user webhook spoof.
@@ -138,8 +138,8 @@ the web UI, which owns the richer config.
 
 | Command | Access | Notes |
 |---|---|---|
-| `/panel post [team]` | Manage Server | Posts the panel to the current channel; stores message ID in `ticket_panels`. Multi-team servers choose `team:` (autocompleted); one-team servers omit it |
-| `/panel refresh [message_id]` | Manage Server | Re-renders an existing panel after settings change (from the panel's own team, falling back to the guild default for older panels) |
+| `/panel post [team] [message_id]` | Manage Server | Posts the team's panel (heading `## 🎫 Open a Ticket · <Team>`) to the current channel; upserts the message ID into `ticket_panels`. Multi-team servers choose `team:` (autocompleted); one-team servers omit it. `message_id:` instead **adopts** an existing message in this channel — it must have been sent by this bot account (e.g. a legacy classic-embed message from older bot software) — and edits it in place into the panel, clearing its content/embeds/attachments so Discord accepts `IS_COMPONENTS_V2`. Shared with the internal route via `postTeamPanel` (`src/services/panelService.ts`); a team with no public categories is refused |
+| `/panel refresh [message_id]` | Manage Server | Re-renders an existing panel after settings change (from the panel's own team, falling back to the guild default for older panels — the heading uses that team's name), with the same legacy-field clearing |
 | `/tickets settings [team]` | Manage Server | Edit a team's DB-backed config via ephemeral panel + modal. Multi-team servers pick a team with `team:` |
 | `/tickets claim` / `/tickets unclaim` | Staff | Take or release the current ticket |
 | `/tickets assign <user>` | Staff | Assign the current ticket to a staff member |
@@ -313,6 +313,15 @@ Current endpoints:
 - `POST /api/internal/tickets/open` — **Integration API**: open a ticket for `openerDiscordId` on behalf of an integration (`src/services/integrationTickets.ts`).
 - `POST /api/internal/tickets/close` — **Integration API**: close a ticket.
 - `POST /api/internal/tickets/webhook/ensure` — **Integration API**: create/persist the ticket channel's webhook.
+- `POST /api/internal/panel/post` — post a team's ticket panel, or adopt an existing bot-authored message as it, without a slash command (`handlePanelPost` → `postTeamPanel`, `src/services/panelService.ts`; v0.10.1).
+
+**Panel route contract** (`POST /api/internal/panel/post`, JSON, zod-validated; errors are `{ok:false, error:'<code>', message}`):
+
+| Body | Responses |
+|---|---|
+| `{guildId, channelId, business, messageId?, postedBy?}` — snowflakes except `business` (team **slug or `businesses.id`**); `postedBy` defaults to the bot user id (stored as `ticket_panels.posted_by_discord_id`) | `201 {ok:true, messageId, channelId, business:<slug>, categories:[keys], adopted:false}` (new message) · `200 {…, adopted:true}` (`messageId` adopted in place) · `400 validation` · `404 business_not_found` · `403 business_guild_mismatch` (team is not in `guildId`) · `503 guild_unavailable` (bot not in the guild / transient channel lookup) · `404 channel_not_found` (unknown or not a text channel in that guild) · `409 no_categories` (no public categories) · `404 message_not_found` (`messageId` not in that channel) · `403 not_bot_message` (not authored by this bot) · `502 discord_error` (Discord refused the send/edit) |
+
+The `ticket_panels` row is upserted on `message_id` (insert, or update `business_id`/`guild_id`/`channel_id`/`posted_by_discord_id`), so re-running the route on the same message is safe and re-points it to the given team.
 
 **Integration route contract** (bodies are JSON, errors are `{error:'<code>'}`; body cap 16 000 **bytes**, decoded once as UTF-8):
 
