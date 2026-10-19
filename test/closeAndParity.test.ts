@@ -611,4 +611,40 @@ describe('Close → copium.pics transcript paste', () => {
       expect(JSON.parse(String(albumCalls[0].init.body))).toEqual({ imageIds: ['qVx79Apa'] })
     }
   })
+
+  it('DM too large (413): retried once without the attachment, keeping the Transcript link', async () => {
+    const s = await openIntegrationTicket()
+    s.opener.dmError = (payload) => (payload.files?.length ? Object.assign(new Error('Request entity too large'), { status: 413 }) : null)
+    routeCopium(() => new Response('{}', { status: 500 }), undefined, htmlUploadOk)
+    const t = await close(s)
+    expect(t.status).toBe('closed')
+    expect(s.opener.dmAttempts).toHaveLength(2)
+    expect(s.opener.dmAttempts[0].files).toHaveLength(1)
+    expect(s.opener.sentDMs).toHaveLength(1)
+    const dm = s.opener.sentDMs[0] as { content?: string; files?: unknown[] }
+    expect(dm.files).toBeUndefined()
+    expect(dm.content).toContain(`Transcript: ${HTML_LINK}`)
+    expect(dm.content).not.toContain('A full transcript is attached.')
+  })
+
+  it('DM too large with error code 40005 also retries', async () => {
+    const s = await openIntegrationTicket()
+    s.opener.dmError = (payload) => (payload.files?.length ? Object.assign(new Error('Request entity too large'), { code: 40005 }) : null)
+    routeCopium(() => new Response('{}', { status: 500 }), undefined, htmlUploadOk)
+    await close(s)
+    expect(s.opener.dmAttempts).toHaveLength(2)
+    expect(s.opener.sentDMs).toHaveLength(1)
+    expect(s.opener.sentDMs[0].content).toContain(`Transcript: ${HTML_LINK}`)
+  })
+
+  it('DMs closed (50007): no retry, close still completes', async () => {
+    const s = await openIntegrationTicket()
+    s.opener.dmError = () => Object.assign(new Error('Cannot send messages to this user'), { code: 50007, status: 403 })
+    routeCopium(() => new Response('{}', { status: 500 }), undefined, htmlUploadOk)
+    const t = await close(s)
+    expect(s.opener.dmAttempts).toHaveLength(1)
+    expect(s.opener.sentDMs).toHaveLength(0)
+    expect(t.status).toBe('closed')
+    expect(s.channel.deleted).toBe(true)
+  })
 })

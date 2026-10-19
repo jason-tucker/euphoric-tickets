@@ -1,5 +1,5 @@
-import type { TextChannel } from 'discord.js'
-import { Collection, type Message } from 'discord.js'
+import type { GuildMember, TextChannel, User } from 'discord.js'
+import { Collection, UserFlags, type Message } from 'discord.js'
 import { ExportReturnType, generateFromMessages } from 'discord-html-transcripts'
 
 function escapeHtml(s: string): string {
@@ -33,6 +33,13 @@ export async function fetchAllMessages(channel: TextChannel, hardCap = 2000): Pr
 // copium rehosts them. The header shows guild + channel; the footer names the
 // ticket. Without hydration the page loads @derockdev/discord-components-core
 // from cdn.jsdelivr.net to render the custom elements in a browser.
+//
+// copium sanitises uploads: it swaps that <script src> for its vendored copy
+// and strips every inline script, including the library's
+// `window.$discordMessage={profiles:…}` that maps `profile="<userId>"` to an
+// author/avatar. So the output is post-processed (inlineProfiles) to carry
+// explicit author/avatar/bot/verified/role-color attributes on each element,
+// which renders the same on copium and in a browser.
 export async function renderDiscordTranscriptHtml(opts: {
   channel: TextChannel
   messages: Message[]
@@ -40,13 +47,65 @@ export async function renderDiscordTranscriptHtml(opts: {
   filename: string
 }): Promise<string> {
   const { channel, messages, ticketId, filename } = opts
-  return generateFromMessages(messages, channel, {
+  const html = await generateFromMessages(messages, channel, {
     returnType: ExportReturnType.String,
     saveImages: false,
     poweredBy: false,
     filename,
     footerText: `Ticket #${ticketId} · ${channel.guild.name} · #${channel.name} · {number} message{s}`,
   })
+  return inlineProfiles(html, buildProfiles(messages))
+}
+
+type Profile = { author: string; avatar: string; bot: boolean; verified: boolean; roleColor: string | undefined }
+
+// Same fields and fallbacks as discord-html-transcripts' own buildProfiles
+// (nickname → display name → username; member avatar → user avatar), built
+// from the messages rather than parsed back out of its inline script.
+export function buildProfiles(messages: Message[]): Map<string, Profile> {
+  const profiles = new Map<string, Profile>()
+  const add = (member: GuildMember | null | undefined, user: User) => {
+    if (profiles.has(user.id)) return
+    profiles.set(user.id, {
+      author: member?.nickname ?? user.displayName ?? user.username,
+      avatar: member?.displayAvatarURL({ size: 64 }) ?? user.displayAvatarURL({ size: 64 }),
+      bot: user.bot,
+      verified: Boolean(user.flags?.has(UserFlags.VerifiedBot)),
+      roleColor: member?.displayHexColor,
+    })
+  }
+  for (const m of messages) {
+    add(m.member, m.author)
+    if (m.interaction) add(null, m.interaction.user)
+    const last = m.thread?.lastMessage
+    if (last) add(last.member, last.author)
+  }
+  return profiles
+}
+
+const escapeAttr = (s: string) => s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+// Discord's "no colour" — black text on the dark theme; leave it to the default.
+const NO_ROLE_COLOR = '#000000'
+
+export function inlineProfiles(html: string, profiles: Map<string, Profile>): string {
+  return (
+    html
+      // The profiles script copium strips anyway (data only; nothing else reads it).
+      .replace(/<script>window\.\$discordMessage=[\s\S]*?<\/script>/g, '')
+      // Stray text node the library emits after its inline <style> (visible ";").
+      .replace(/<\/style>;/g, '</style>')
+      .replace(/ role-color="#000000"/gi, '')
+      // <discord-message profile="…">, <discord-command …>, <discord-thread-message …>
+      .replace(/ profile="(\d+)"/g, (_m, id: string) => {
+        const p = profiles.get(id)
+        if (!p) return ''
+        let attrs = ` author="${escapeAttr(p.author)}" avatar="${escapeAttr(p.avatar)}"`
+        if (p.bot) attrs += ' bot=""'
+        if (p.verified) attrs += ' verified=""'
+        if (p.roleColor && p.roleColor.toLowerCase() !== NO_ROLE_COLOR) attrs += ` role-color="${escapeAttr(p.roleColor)}"`
+        return attrs
+      })
+  )
 }
 
 // Legacy hand-rolled HTML. Only used as the DM attachment when the

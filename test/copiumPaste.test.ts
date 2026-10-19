@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Collection } from 'discord.js'
 import { addToAlbum, COPIUM_HTML_MAX_BYTES, createPaste, uploadHtml } from '../src/services/copiumService'
-import { renderDiscordTranscriptHtml, renderTranscriptText } from '../src/services/transcriptService'
+import { inlineProfiles, renderDiscordTranscriptHtml, renderTranscriptText } from '../src/services/transcriptService'
 import { sampleConversation } from './fixtures/sampleConversation'
 import { env } from '../src/config/env'
 
@@ -210,9 +210,48 @@ describe('renderDiscordTranscriptHtml', () => {
       expect(html).toContain('url="https://cdn.discordapp.com/attachments/') // saveImages: false
       expect(html).not.toContain('data:image')
       expect(html).not.toMatch(/Powered by/i)
+
+      // copium strips inline scripts: author/avatar must be explicit attributes.
+      expect(html).not.toContain('profile=')
+      expect(html).not.toContain('$discordMessage')
+      expect(html).not.toContain('</style>;')
+      expect(html).not.toContain('role-color="#000000"')
+      const tags = html.match(/<discord-message [^>]*>/g) ?? []
+      expect(tags).toHaveLength(4)
+      for (const tag of tags) {
+        expect(tag).toMatch(/ author="[^"]+"/)
+        expect(tag).toMatch(/ avatar="https:\/\/[^"]+"/)
+      }
+      expect(tags[0]).toContain('author="EuphoricTickets"')
+      expect(tags[0]).toMatch(/ bot(="")?[ >]/)
+      expect(tags[1]).toContain('author="Sample User"')
+      expect(tags[1]).not.toMatch(/ bot[= >]/)
+      expect(tags[2]).toContain('author="Helper"')
+      // The components script still loads (copium swaps it for its vendored copy).
+      expect(html).toContain('<script type="module" src="https://cdn.jsdelivr.net/npm/@derockdev/discord-components-core@')
     } finally {
       await client.destroy()
     }
+  })
+})
+
+describe('inlineProfiles', () => {
+  it('escapes attribute values, adds verified/role-color only when meaningful, drops unknown profiles', () => {
+    const profiles = new Map([
+      ['1', { author: 'A "quoted" <b>&', avatar: 'https://cdn.example/a.png?x=1&y=2', bot: true, verified: true, roleColor: '#ff0000' }],
+      ['2', { author: 'plain', avatar: 'https://cdn.example/b.png', bot: false, verified: false, roleColor: '#000000' }],
+    ])
+    const out = inlineProfiles(
+      '<style>x</style>;<discord-message id="m-1" profile="1">a</discord-message><discord-message id="m-2" profile="2">b</discord-message>' +
+        '<discord-message id="m-3" profile="3">c</discord-message><discord-reply slot="reply" author="r" role-color="#000000"></discord-reply>',
+      profiles,
+    )
+    expect(out).toBe(
+      '<style>x</style>' +
+        '<discord-message id="m-1" author="A &quot;quoted&quot; &lt;b&gt;&amp;" avatar="https://cdn.example/a.png?x=1&amp;y=2" bot="" verified="" role-color="#ff0000">a</discord-message>' +
+        '<discord-message id="m-2" author="plain" avatar="https://cdn.example/b.png">b</discord-message>' +
+        '<discord-message id="m-3">c</discord-message><discord-reply slot="reply" author="r"></discord-reply>',
+    )
   })
 })
 

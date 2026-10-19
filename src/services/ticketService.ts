@@ -689,20 +689,21 @@ export async function closeTicket(opts: {
       const webLink = business
         ? `${env.WEB_BASE_URL}/b/${business.slug}/tickets/${ticket.id}`
         : null
-      const content =
+      const body =
         `Your ticket **#${ticket.id}** in **${guild.name}** was closed by ${closer.user.tag}.` +
         (opts.reason ? `\n\nReason: ${opts.reason.slice(0, 500)}` : '') +
         (webLink ? `\n\nView the conversation on the web: ${webLink}` : '') +
-        (transcriptUrl ? `\n\nTranscript: ${transcriptUrl}` : '') +
-        '\n\nA full transcript is attached.'
-      await opener
-        .send({ content, files: [dmFile] })
-        .catch((err) => {
-          log.info('Opener DM failed (likely DMs closed)', {
-            ticketId: ticket.id,
-            err: String(err),
-          })
-        })
+        (transcriptUrl ? `\n\nTranscript: ${transcriptUrl}` : '')
+      const logDmFailure = (err: unknown) =>
+        log.info('Opener DM failed (likely DMs closed)', { ticketId: ticket.id, err: String(err) })
+      await opener.send({ content: body + '\n\nA full transcript is attached.', files: [dmFile] }).catch(async (err) => {
+        // A long transcript can exceed Discord's upload limit: retry once
+        // without the attachment (the Transcript link, if any, still carries
+        // it). Any other error (e.g. 50007 DMs closed) is not retried.
+        if (!isPayloadTooLarge(err)) return logDmFailure(err)
+        log.info('Opener DM attachment too large; retrying without it', { ticketId: ticket.id, bytes: buf.length })
+        await opener.send({ content: body }).catch(logDmFailure)
+      })
     }
 
     void logTicketEvent({
@@ -733,6 +734,13 @@ export async function closeTicket(opts: {
   })
 
   return { ok: true }
+}
+
+// Discord rejects an oversized upload with HTTP 413 / code 40005
+// ("Request entity too large").
+function isPayloadTooLarge(err: unknown): boolean {
+  const e = err as { status?: unknown; code?: unknown; message?: unknown } | null
+  return e?.status === 413 || e?.code === 40005 || /request entity too large/i.test(String(e?.message ?? ''))
 }
 
 // Publishes the transcript to copium.pics: the Discord-style HTML upload

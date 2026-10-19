@@ -156,7 +156,14 @@ export class FakeMember {
   get permissions() {
     return { has: () => this.manageGuild }
   }
-  async send(payload: { content?: string }): Promise<unknown> {
+  // Every DM attempt (including rejected ones), and an optional hook that
+  // returns an error to reject a given payload with.
+  dmAttempts: { content?: string; files?: unknown[] }[] = []
+  dmError: ((payload: { content?: string; files?: unknown[] }) => unknown) | null = null
+  async send(payload: { content?: string; files?: unknown[] }): Promise<unknown> {
+    this.dmAttempts.push(payload)
+    const err = this.dmError?.(payload)
+    if (err) throw err
     this.sentDMs.push(payload)
     return {}
   }
