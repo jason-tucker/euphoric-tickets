@@ -664,15 +664,17 @@ export async function closeTicket(opts: {
       messages,
     }
     const filename = `ticket-${ticket.id}-${channel.name}.html`
-    // Discord-style HTML (v0.10.0). If the renderer throws, the DM falls back
-    // to the legacy HTML and copium to the text paste.
+    // Discord-style HTML (v0.10.0), sanitized (transcriptSanitizer.ts): the
+    // `attachment` variant (CSP meta, pinned components script) is the DM
+    // file, the `upload` variant goes to copium. If rendering or sanitizing
+    // throws, the DM falls back to the legacy HTML and copium to the text paste.
     const discordHtml = await renderDiscordTranscriptHtml({ channel, messages, ticketId: ticket.id, filename }).catch(
       (err) => {
         log.warn('Discord-style transcript render failed; using the legacy HTML', { ticketId: ticket.id, err: String(err) })
         return null
       },
     )
-    const html = discordHtml ?? renderTranscriptHtml(transcriptInput)
+    const html = discordHtml?.attachment ?? renderTranscriptHtml(transcriptInput)
     const buf = Buffer.from(html, 'utf8')
 
     // copium.pics transcript — before the DM so the link can go in it.
@@ -681,7 +683,11 @@ export async function closeTicket(opts: {
     // Close waits at most the upload timeout (30 s), plus the paste timeout
     // (15 s) only when the upload fails and the text paste is tried. The album
     // add (if configured) is fire-and-forget.
-    const transcriptUrl = await publishTranscript(ticket.id, { discordHtml, filename, text: transcriptInput }, closedAt)
+    const transcriptUrl = await publishTranscript(
+      ticket.id,
+      { discordHtml: discordHtml?.upload ?? null, filename, text: transcriptInput },
+      closedAt,
+    )
 
     if (opener) {
       const dmFile = new AttachmentBuilder(buf, { name: filename })

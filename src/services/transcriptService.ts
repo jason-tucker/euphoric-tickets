@@ -1,6 +1,9 @@
 import type { GuildMember, TextChannel, User } from 'discord.js'
 import { Collection, UserFlags, type Message } from 'discord.js'
 import { ExportReturnType, generateFromMessages } from 'discord-html-transcripts'
+import { buildProfiles as libraryBuildProfiles } from 'discord-html-transcripts/dist/utils/buildProfiles'
+import { log } from './logger'
+import { sanitizeTranscriptHtml, type SanitizedTranscript, type TranscriptProfile } from './transcriptSanitizer'
 
 function escapeHtml(s: string): string {
   return s
@@ -28,24 +31,31 @@ export async function fetchAllMessages(channel: TextChannel, hardCap = 2000): Pr
 
 // Discord-style HTML transcript (v0.10.0) via discord-html-transcripts: the
 // same <discord-messages> markup copium.pics renders like the real channel
-// (transcripts.copium.tools). This is the DM attachment and the copium upload.
-// Images are NOT inlined (saveImages: false) — they stay Discord CDN URLs and
-// copium rehosts them. The header shows guild + channel; the footer names the
-// ticket. Without hydration the page loads @derockdev/discord-components-core
-// from cdn.jsdelivr.net to render the custom elements in a browser.
+// (transcripts.copium.tools). Images are NOT inlined (saveImages: false) —
+// they stay Discord CDN URLs and copium rehosts them. The header shows guild +
+// channel; the footer names the ticket. Without hydration the page loads
+// @derockdev/discord-components-core from cdn.jsdelivr.net to render the
+// custom elements in a browser.
 //
-// copium sanitises uploads: it swaps that <script src> for its vendored copy
-// and strips every inline script, including the library's
-// `window.$discordMessage={profiles:…}` that maps `profile="<userId>"` to an
-// author/avatar. So the output is post-processed (inlineProfiles) to carry
-// explicit author/avatar/bot/verified/role-color attributes on each element,
-// which renders the same on copium and in a browser.
+// The library's HTML is UNTRUSTED: it writes participant names into an inline
+// script with a raw JSON.stringify (a name can close the script). Everything
+// returned here has been through sanitizeTranscriptHtml
+// (src/services/transcriptSanitizer.ts), the trust boundary: parse5-parsed,
+// rebuilt from an allowlist with exactly one, known <script src>, re-parsed and
+// verified — or this throws and the close flow attaches the legacy, escaped
+// renderTranscriptHtml instead.
+//
+// `upload` goes to copium (which strips inline scripts and swaps the script
+// src for its vendored copy, so author/avatar/bot/verified/role-color are
+// explicit attributes instead of the library's profiles map); `attachment` is
+// the opener's DM file: the same markup plus a CSP <meta> and the components
+// script pinned to an exact version.
 export async function renderDiscordTranscriptHtml(opts: {
   channel: TextChannel
   messages: Message[]
   ticketId: number
   filename: string
-}): Promise<string> {
+}): Promise<SanitizedTranscript> {
   const { channel, messages, ticketId, filename } = opts
   const html = await generateFromMessages(messages, channel, {
     returnType: ExportReturnType.String,
@@ -54,16 +64,35 @@ export async function renderDiscordTranscriptHtml(opts: {
     filename,
     footerText: `Ticket #${ticketId} · ${channel.guild.name} · #${channel.name} · {number} message{s}`,
   })
-  return inlineProfiles(html, buildProfiles(messages))
+  return sanitizeTranscriptHtml(await stripLibraryProfilesScript(html, messages), {
+    profiles: buildProfiles(messages),
+    replyAvatars: buildReplyAvatars(messages),
+    requiredIds: messages.filter((m) => !m.system).map((m) => `m-${m.id}`),
+  })
 }
 
-type Profile = { author: string; avatar: string; bot: boolean; verified: boolean; roleColor: string | undefined }
+// Defence in depth before the parser: cut the library's profiles script out
+// of the raw string by its exact bytes, recomputed with the library's own
+// buildProfiles, so a name that closes the script never reaches the DOM at all
+// (not even as inert markup). It is the first `<script>window.$discordMessage=`
+// in the document (only the static <head> precedes it, and message content is
+// escaped). If it is not found verbatim (e.g. a library upgrade changed it),
+// the HTML is left as is and the sanitizer alone removes every script.
+async function stripLibraryProfilesScript(html: string, messages: Message[]): Promise<string> {
+  const exact = `<script>window.$discordMessage={profiles:${JSON.stringify(await libraryBuildProfiles(messages))}}</script>`
+  const at = html.indexOf(exact)
+  if (at === -1) {
+    log.warn('Transcript profiles script not found verbatim; relying on the sanitizer alone')
+    return html
+  }
+  return html.slice(0, at) + html.slice(at + exact.length)
+}
 
 // Same fields and fallbacks as discord-html-transcripts' own buildProfiles
 // (nickname → display name → username; member avatar → user avatar), built
 // from the messages rather than parsed back out of its inline script.
-export function buildProfiles(messages: Message[]): Map<string, Profile> {
-  const profiles = new Map<string, Profile>()
+export function buildProfiles(messages: Message[]): Map<string, TranscriptProfile> {
+  const profiles = new Map<string, TranscriptProfile>()
   const add = (member: GuildMember | null | undefined, user: User) => {
     if (profiles.has(user.id)) return
     profiles.set(user.id, {
@@ -83,28 +112,11 @@ export function buildProfiles(messages: Message[]): Map<string, Profile> {
   return profiles
 }
 
-const escapeAttr = (s: string) => s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-// Discord's "no colour" — black text on the dark theme; leave it to the default.
-const NO_ROLE_COLOR = '#000000'
-
-export function inlineProfiles(html: string, profiles: Map<string, Profile>): string {
-  return (
-    html
-      // The profiles script copium strips anyway (data only; nothing else reads it).
-      .replace(/<script>window\.\$discordMessage=[\s\S]*?<\/script>/g, '')
-      // Stray text node the library emits after its inline <style> (visible ";").
-      .replace(/<\/style>;/g, '</style>')
-      .replace(/ role-color="#000000"/gi, '')
-      // <discord-message profile="…">, <discord-command …>, <discord-thread-message …>
-      .replace(/ profile="(\d+)"/g, (_m, id: string) => {
-        const p = profiles.get(id)
-        if (!p) return ''
-        let attrs = ` author="${escapeAttr(p.author)}" avatar="${escapeAttr(p.avatar)}"`
-        if (p.bot) attrs += ' bot=""'
-        if (p.verified) attrs += ' verified=""'
-        if (p.roleColor && p.roleColor.toLowerCase() !== NO_ROLE_COLOR) attrs += ` role-color="${escapeAttr(p.roleColor)}"`
-        return attrs
-      })
+// Message id → its author's avatar, for <discord-reply> elements the library
+// leaves without one (it only uses a custom user avatar, never the default).
+export function buildReplyAvatars(messages: Message[]): Map<string, string> {
+  return new Map(
+    messages.map((m) => [m.id, m.member?.displayAvatarURL({ size: 32 }) ?? m.author.displayAvatarURL({ size: 32 })]),
   )
 }
 

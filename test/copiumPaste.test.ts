@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Collection } from 'discord.js'
 import { addToAlbum, COPIUM_HTML_MAX_BYTES, createPaste, uploadHtml } from '../src/services/copiumService'
-import { inlineProfiles, renderDiscordTranscriptHtml, renderTranscriptText } from '../src/services/transcriptService'
+import { renderDiscordTranscriptHtml, renderTranscriptText } from '../src/services/transcriptService'
+import { sanitizeTranscriptHtml } from '../src/services/transcriptSanitizer'
 import { sampleConversation } from './fixtures/sampleConversation'
 import { env } from '../src/config/env'
 
@@ -199,54 +200,60 @@ describe('renderDiscordTranscriptHtml', () => {
   it('renders <discord-messages> with one <discord-message> per message, header + footer naming guild/channel/ticket', async () => {
     const { client, channel, messages } = sampleConversation()
     try {
-      const html = await renderDiscordTranscriptHtml({ channel, messages, ticketId: 7, filename: 'ticket-7-sample-user.html' })
-      expect(html).toContain('<discord-messages')
-      expect(html.match(/<discord-message[\s>]/g)).toHaveLength(messages.length)
-      expect(html).toContain('<discord-header guild="Sample Server" channel="ticket-7-sample-user"')
-      expect(html).toContain('Ticket #7 · Sample Server · #ticket-7-sample-user · 4 messages')
-      expect(html).toContain('<discord-reply')
-      expect(html).toContain('<discord-embed')
-      expect(html).toContain('<discord-mention type="user">Helper</discord-mention>')
-      expect(html).toContain('url="https://cdn.discordapp.com/attachments/') // saveImages: false
-      expect(html).not.toContain('data:image')
-      expect(html).not.toMatch(/Powered by/i)
+      const out = await renderDiscordTranscriptHtml({ channel, messages, ticketId: 7, filename: 'ticket-7-sample-user.html' })
+      // Both variants (copium upload, DM attachment) carry the same markup.
+      for (const html of [out.upload, out.attachment]) {
+        expect(html).toContain('<discord-messages')
+        expect(html.match(/<discord-message[\s>]/g)).toHaveLength(messages.length)
+        expect(html).toContain('<discord-header guild="Sample Server" channel="ticket-7-sample-user"')
+        expect(html).toContain('Ticket #7 · Sample Server · #ticket-7-sample-user · 4 messages')
+        expect(html).toContain('<discord-reply')
+        expect(html).toContain('<discord-embed')
+        expect(html).toContain('<discord-mention type="user">Helper</discord-mention>')
+        expect(html).toContain('url="https://cdn.discordapp.com/attachments/') // saveImages: false
+        expect(html).not.toContain('data:image')
+        expect(html).not.toMatch(/Powered by/i)
 
-      // copium strips inline scripts: author/avatar must be explicit attributes.
-      expect(html).not.toContain('profile=')
-      expect(html).not.toContain('$discordMessage')
-      expect(html).not.toContain('</style>;')
-      expect(html).not.toContain('role-color="#000000"')
-      const tags = html.match(/<discord-message [^>]*>/g) ?? []
-      expect(tags).toHaveLength(4)
-      for (const tag of tags) {
-        expect(tag).toMatch(/ author="[^"]+"/)
-        expect(tag).toMatch(/ avatar="https:\/\/[^"]+"/)
+        // copium strips inline scripts: author/avatar must be explicit attributes.
+        expect(html).not.toContain('profile=')
+        expect(html).not.toContain('$discordMessage')
+        expect(html).not.toContain('</style>;')
+        expect(html).not.toContain('role-color="#000000"')
+        const tags = html.match(/<discord-message [^>]*>/g) ?? []
+        expect(tags).toHaveLength(4)
+        for (const tag of tags) {
+          expect(tag).toMatch(/ author="[^"]+"/)
+          expect(tag).toMatch(/ avatar="https:\/\/[^"]+"/)
+        }
+        expect(tags[0]).toContain('author="EuphoricTickets"')
+        expect(tags[0]).toMatch(/ bot(="")?[ >]/)
+        expect(tags[1]).toContain('author="Sample User"')
+        expect(tags[1]).not.toMatch(/ bot[= >]/)
+        expect(tags[2]).toContain('author="Helper"')
+        // The components script still loads (copium swaps it for its vendored copy).
+        expect(html).toContain('<script type="module" src="https://cdn.jsdelivr.net/npm/@derockdev/discord-components-core@')
       }
-      expect(tags[0]).toContain('author="EuphoricTickets"')
-      expect(tags[0]).toMatch(/ bot(="")?[ >]/)
-      expect(tags[1]).toContain('author="Sample User"')
-      expect(tags[1]).not.toMatch(/ bot[= >]/)
-      expect(tags[2]).toContain('author="Helper"')
-      // The components script still loads (copium swaps it for its vendored copy).
-      expect(html).toContain('<script type="module" src="https://cdn.jsdelivr.net/npm/@derockdev/discord-components-core@')
     } finally {
       await client.destroy()
     }
   })
 })
 
-describe('inlineProfiles', () => {
+describe('sanitizeTranscriptHtml profile rewrite', () => {
   it('escapes attribute values, adds verified/role-color only when meaningful, drops unknown profiles', () => {
     const profiles = new Map([
       ['1', { author: 'A "quoted" <b>&', avatar: 'https://cdn.example/a.png?x=1&y=2', bot: true, verified: true, roleColor: '#ff0000' }],
       ['2', { author: 'plain', avatar: 'https://cdn.example/b.png', bot: false, verified: false, roleColor: '#000000' }],
     ])
-    const out = inlineProfiles(
-      '<style>x</style>;<discord-message id="m-1" profile="1">a</discord-message><discord-message id="m-2" profile="2">b</discord-message>' +
-        '<discord-message id="m-3" profile="3">c</discord-message><discord-reply slot="reply" author="r" role-color="#000000"></discord-reply>',
-      profiles,
+    const { upload } = sanitizeTranscriptHtml(
+      '<!DOCTYPE html><html><head></head><body>' +
+        '<style>x</style>;<discord-message id="m-1" profile="1">a</discord-message><discord-message id="m-2" profile="2">b</discord-message>' +
+        '<discord-message id="m-3" profile="3">c</discord-message><discord-reply slot="reply" author="r" role-color="#000000"></discord-reply>' +
+        '</body></html>',
+      { profiles },
     )
-    expect(out).toBe(
+    const body = upload.slice(upload.indexOf('<body>') + '<body>'.length, upload.indexOf('</body>'))
+    expect(body).toBe(
       '<style>x</style>' +
         '<discord-message id="m-1" author="A &quot;quoted&quot; &lt;b&gt;&amp;" avatar="https://cdn.example/a.png?x=1&amp;y=2" bot="" verified="" role-color="#ff0000">a</discord-message>' +
         '<discord-message id="m-2" author="plain" avatar="https://cdn.example/b.png">b</discord-message>' +

@@ -10,6 +10,7 @@ import { handleTicketClose } from '../src/interactions/buttons/ticketClose'
 import { execute as executeTickets, executeCloseConfirm } from '../src/commands/tickets'
 import { componentsJson, fakeClient, seedTeam, type FakeGuild, type FakeMember, type FakeTextChannel } from './fakes'
 import { openBody, seedIntegration, stubFetch } from './helpers'
+import { LIBRARY_COMPONENTS_SRC, PINNED_COMPONENTS_SRC, TRANSCRIPT_CSP } from '../src/services/transcriptSanitizer'
 
 const ADMIN_ROLE = '200000000000000010' // team admin_role_ids ("Ticket Master")
 const MANAGER_ROLE = '200000000000000011' // category staff only (EFM Managers)
@@ -585,6 +586,18 @@ describe('Close → copium.pics transcript paste', () => {
     const files = (s.opener.sentDMs[0] as any).files
     expect(files).toHaveLength(1)
     expect(String(files[0].attachment)).toContain('<discord-messages')
+
+    // Sanitized variants: copium gets no CSP meta and the library's script
+    // src (it swaps in its vendored copy); the DM file gets the CSP meta and
+    // the components script pinned to an exact version.
+    const uploaded = await file.text()
+    const attached = String(files[0].attachment)
+    expect(uploaded).not.toContain('http-equiv')
+    expect(uploaded).toContain(`<script type="module" src="${LIBRARY_COMPONENTS_SRC}"></script>`)
+    expect(attached).toContain(`<meta http-equiv="Content-Security-Policy" content="${TRANSCRIPT_CSP}">`)
+    expect(attached).toContain(`<script type="module" src="${PINNED_COMPONENTS_SRC}"></script>`)
+    expect(attached.match(/<script/g)).toHaveLength(1)
+    expect(uploaded.match(/<script/g)).toHaveLength(1)
 
     await vi.waitFor(() => expect(albumCalls).toHaveLength(1))
     expect(JSON.parse(String(albumCalls[0].init.body))).toEqual({ imageIds: ['TDTwf8Cu'] })
