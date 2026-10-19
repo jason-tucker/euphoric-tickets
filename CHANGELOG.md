@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.10.0] — 2026-10-18 — Discord-style HTML transcripts on copium.pics
+
+No schema change; no web deploy required. copium.pics 1.12+ renders uploaded Discord transcripts like the real channel on `transcripts.copium.tools`.
+
+### Changed
+- **Discord-style HTML transcript.** Close now renders the transcript with [`discord-html-transcripts`](https://www.npmjs.com/package/discord-html-transcripts) 3.3.0 (`generateFromMessages` over the messages `fetchAllMessages` already fetched, hardCap 2000) in the new `renderDiscordTranscriptHtml` (`src/services/transcriptService.ts`): `returnType: string`, `saveImages: false` (images stay Discord CDN URLs; copium rehosts them), `poweredBy: false`, filename `ticket-<id>-<channel>.html`, the library's header (guild + channel) and a footer `Ticket #<id> · <guild> · #<channel> · N messages`. This HTML is the opener DM attachment too. If the renderer throws, the legacy hand-rolled `renderTranscriptHtml` is attached instead and copium falls back to the text paste.
+- **copium transcript link.** `closeTicket` (`publishTranscript`, formerly `postTranscriptPaste`) first uploads the HTML with the new `uploadHtml` (`src/services/copiumService.ts`): multipart `file` (`text/html`, `.html` filename) + `title` to `<COPIUM_UPLOAD_BASE>/api/upload?wait=1`, 30 s timeout, skipped without a request over copium's 25 MiB `htmlMaxBytes`. The link is the response's `link` (fallback `url`) — e.g. `https://transcripts.copium.tools/<id>.html`, **without** the `COPIUM_LINK_HOST` rewrite; a non-`html` `kind` is accepted with a warning. On any upload failure the v0.9.0 plain-text paste is used instead. The winner's link goes in the DM (`Transcript: <url>`), is written to `tickets.external_transcript_url` (still only when null) and its id is added fire-and-forget to `COPIUM_ALBUM_ID`. Copium wait on close: at most 30 s, or 45 s (30 s upload + 15 s paste) only in the fallback case.
+- **Env:** new `COPIUM_UPLOAD_BASE` (default `https://v.copium.pics`, empty-string coerced). `COPIUM_LINK_HOST` now only affects text-paste links.
+- **Dependency:** `discord-html-transcripts` 3.3.0. It `require`s `debug` without declaring it, so `package.json` adds a pnpm `packageExtensions` entry for `debug@^4.4.0` (without it the module fails to load under pnpm).
+
+### Tests
+- 131 tests (was 123). `uploadHtml`: exact URL / headers / multipart fields (filename, content type, title), `link` → `url` fallback, `.html` appended, non-html `kind` warns, no token or oversize → no request, 401 / 500 / timeout / thrown / bad JSON / no link → `null` without logging the token or HTML. `renderDiscordTranscriptHtml` over a fictional conversation built from real discord.js structures (`test/fixtures/sampleConversation.ts`: embed, mention, image attachment, reply) emits `<discord-messages>` and one `<discord-message>` per message. Close: HTML success → DM + column carry the `transcripts.copium.tools` link and the album gets the HTML id with no paste; HTML failure (401 / bad JSON / thrown) → paste link + paste id; both fail → close and DM still fine; no token → no requests.
+
 ## [0.9.0] — 2026-10-15 — Ticket transcripts are also posted as a copium.pics paste
 
 No schema change (reuses the existing `tickets.external_transcript_url` column); no web deploy required — the web dashboard shows the link once it reads that column.

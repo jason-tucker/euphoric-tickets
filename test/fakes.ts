@@ -87,6 +87,16 @@ export class FakeTextChannel {
   isTextBased(): boolean {
     return true
   }
+  // Read by the Discord-style transcript renderer (discord-html-transcripts).
+  isDMBased(): boolean {
+    return false
+  }
+  isThread(): boolean {
+    return false
+  }
+  isVoiceBased(): boolean {
+    return false
+  }
   async send(payload: Sent | string): Promise<{ id: string }> {
     if (typeof payload !== 'string') assertDiscordLimits(payload)
     this.sent.push(typeof payload === 'string' ? { content: payload } : payload)
@@ -157,6 +167,9 @@ export class FakeGuild {
   memberMap = new Map<string, FakeMember>()
   available = true
   name = 'Test Guild'
+  iconURL(): string | null {
+    return null
+  }
   roles: { everyone: { id: string } }
   me: FakeMember
   constructor(public id: string = snow()) {

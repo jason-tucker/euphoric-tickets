@@ -350,19 +350,29 @@ describe('POST /api/internal/tickets/close', () => {
 
 
 // v0.9.0: closing also posts a copium.pics text paste and links it in the DM.
+// v0.10.0: the Discord-style HTML upload is tried first; these 0.9.0 tests
+// make it fail (default upload response: 500) and so exercise the text-paste
+// fallback.
 describe('Close → copium.pics transcript paste', () => {
   const PAGE_URL = 'https://tucker.copium.pics/i/qVx79Apa'
   let pasteCalls: { url: string; init: RequestInit }[]
   let albumCalls: { url: string; init: RequestInit }[]
+  let uploadCalls: { url: string; init: RequestInit }[]
 
   function routeCopium(
     response: () => Response | Promise<Response>,
     albumResponse: () => Response | Promise<Response> = () => new Response(JSON.stringify({ added: 1, album: {} }), { status: 200 }),
+    uploadResponse: () => Response | Promise<Response> = () => new Response(JSON.stringify({ error: 'boom' }), { status: 500 }),
   ) {
     pasteCalls = []
     albumCalls = []
+    uploadCalls = []
     vi.mocked(globalThis.fetch).mockImplementation(async (input: any, init?: any) => {
       const url = String(input instanceof Request ? input.url : input)
+      if (url.startsWith('https://v.copium.pics/')) {
+        uploadCalls.push({ url, init })
+        return uploadResponse()
+      }
       if (url.startsWith('https://copium.pics/api/albums/')) {
         albumCalls.push({ url, init })
         return albumResponse()
@@ -389,10 +399,13 @@ describe('Close → copium.pics transcript paste', () => {
     return t
   }
 
-  it('success: the DM carries the paste link (custom host) and the column is set', async () => {
+  it('upload fails → paste fallback: the DM carries the paste link (custom host) and the column is set', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
     const s = await openIntegrationTicket()
     routeCopium(() => new Response(JSON.stringify({ id: 'qVx79Apa', pageUrl: PAGE_URL }), { status: 201 }))
     const t = await close(s)
+
+    expect(uploadCalls).toHaveLength(1)
 
     expect(pasteCalls).toHaveLength(1)
     const body = JSON.parse(String(pasteCalls[0].init.body))
@@ -420,7 +433,7 @@ describe('Close → copium.pics transcript paste', () => {
     expect(s.opener.sentDMs[0].content).toContain('Transcript: https://i.tucker.host/i/qVx79Apa')
   })
 
-  it('failure (401): close still completes, the DM is still sent without the link, column untouched', async () => {
+  it('upload + paste both fail (401): close still completes, the DM is still sent without the link, column untouched', async () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {})
     const s = await openIntegrationTicket()
     routeCopium(() => new Response(JSON.stringify({ error: 'Upload token is invalid or was revoked' }), { status: 401 }))
@@ -447,12 +460,15 @@ describe('Close → copium.pics transcript paste', () => {
     expect(s.opener.sentDMs[0].content).not.toContain('Transcript:')
   })
 
-  it('disabled (no COPIUM_TOKEN): no paste request at all', async () => {
-    Object.assign(env, { COPIUM_TOKEN: undefined })
+  it('disabled (no COPIUM_TOKEN): no upload, paste or album request at all', async () => {
+    Object.assign(env, { COPIUM_TOKEN: undefined, COPIUM_ALBUM_ID: 'alb123' })
     const s = await openIntegrationTicket()
     routeCopium(() => new Response(JSON.stringify({ pageUrl: PAGE_URL }), { status: 201 }))
     const t = await close(s)
+    await new Promise((r) => setTimeout(r, 50))
+    expect(uploadCalls).toHaveLength(0)
     expect(pasteCalls).toHaveLength(0)
+    expect(albumCalls).toHaveLength(0)
     expect(t.externalTranscriptUrl).toBeNull()
     expect(s.opener.sentDMs[0].content).not.toContain('Transcript:')
   })
@@ -526,5 +542,73 @@ describe('Close → copium.pics transcript paste', () => {
     expect(s.opener.sentDMs[0].content).toContain('Transcript: https://i.tucker.host/i/qVx79Apa')
     const audits = await db.select().from(auditLogs).where(eq(auditLogs.ticketId, s.ticketId))
     expect(audits.some((a) => a.action === 'closed')).toBe(true)
+  })
+
+  const HTML_LINK = 'https://transcripts.copium.tools/TDTwf8Cu.html'
+  const htmlUploadOk = () =>
+    new Response(
+      JSON.stringify({
+        key: 'TDTwf8Cu.html',
+        kind: 'html',
+        id: 'TDTwf8Cu',
+        url: HTML_LINK,
+        messages: 2,
+        pageUrl: 'https://tucker.copium.pics/i/TDTwf8Cu',
+        link: HTML_LINK,
+      }),
+      { status: 201 },
+    )
+
+  it('HTML upload success: DM has the transcripts.copium.tools link, column set, album gets the html id, no paste', async () => {
+    Object.assign(env, { COPIUM_ALBUM_ID: 'alb123' })
+    const s = await openIntegrationTicket()
+    routeCopium(() => new Response(JSON.stringify({ id: 'qVx79Apa', pageUrl: PAGE_URL }), { status: 201 }), undefined, htmlUploadOk)
+    const t = await close(s)
+
+    expect(uploadCalls).toHaveLength(1)
+    expect(uploadCalls[0].url).toBe('https://v.copium.pics/api/upload?wait=1')
+    const form = uploadCalls[0].init.body as FormData
+    const file = form.get('file') as File
+    expect(file.name).toBe(`ticket-${s.ticketId}-${s.channel.name}.html`)
+    expect(file.type).toBe('text/html')
+    expect(await file.text()).toContain('<discord-messages')
+    expect(form.get('title')).toBe(`Ticket #${s.ticketId} — ${s.channel.name} (Test Guild)`)
+    expect(pasteCalls).toHaveLength(0)
+
+    // COPIUM_LINK_HOST (i.tucker.host) is NOT applied to the HTML link.
+    expect(t.externalTranscriptUrl).toBe(HTML_LINK)
+    expect(s.channel.deleted).toBe(true)
+    expect(s.opener.sentDMs).toHaveLength(1)
+    const dm = s.opener.sentDMs[0].content!
+    expect(dm).toContain(`\n\nTranscript: ${HTML_LINK}`)
+    expect(dm).toContain(`https://tickets.example.test/b/${s.second.business.slug}/tickets/${s.ticketId}`)
+    const files = (s.opener.sentDMs[0] as any).files
+    expect(files).toHaveLength(1)
+    expect(String(files[0].attachment)).toContain('<discord-messages')
+
+    await vi.waitFor(() => expect(albumCalls).toHaveLength(1))
+    expect(JSON.parse(String(albumCalls[0].init.body))).toEqual({ imageIds: ['TDTwf8Cu'] })
+  })
+
+  it('HTML upload fails → the paste link is used and its id goes to the album', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    Object.assign(env, { COPIUM_ALBUM_ID: 'alb123' })
+    for (const uploadResponse of [
+      () => new Response(JSON.stringify({ error: 'Upload token is invalid or was revoked' }), { status: 401 }),
+      () => new Response('not json', { status: 201 }),
+      (): Response => {
+        throw new TypeError('fetch failed')
+      },
+    ]) {
+      const s = await openIntegrationTicket()
+      routeCopium(() => new Response(JSON.stringify({ id: 'qVx79Apa', pageUrl: PAGE_URL }), { status: 201 }), undefined, uploadResponse)
+      const t = await close(s)
+      expect(uploadCalls).toHaveLength(1)
+      expect(pasteCalls).toHaveLength(1)
+      expect(t.externalTranscriptUrl).toBe('https://i.tucker.host/i/qVx79Apa')
+      expect(s.opener.sentDMs[0].content).toContain('Transcript: https://i.tucker.host/i/qVx79Apa')
+      await vi.waitFor(() => expect(albumCalls).toHaveLength(1))
+      expect(JSON.parse(String(albumCalls[0].init.body))).toEqual({ imageIds: ['qVx79Apa'] })
+    }
   })
 })

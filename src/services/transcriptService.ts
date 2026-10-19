@@ -1,5 +1,6 @@
 import type { TextChannel } from 'discord.js'
 import { Collection, type Message } from 'discord.js'
+import { ExportReturnType, generateFromMessages } from 'discord-html-transcripts'
 
 function escapeHtml(s: string): string {
   return s
@@ -25,6 +26,31 @@ export async function fetchAllMessages(channel: TextChannel, hardCap = 2000): Pr
   return all.sort((a, b) => Number(a.createdTimestamp) - Number(b.createdTimestamp))
 }
 
+// Discord-style HTML transcript (v0.10.0) via discord-html-transcripts: the
+// same <discord-messages> markup copium.pics renders like the real channel
+// (transcripts.copium.tools). This is the DM attachment and the copium upload.
+// Images are NOT inlined (saveImages: false) — they stay Discord CDN URLs and
+// copium rehosts them. The header shows guild + channel; the footer names the
+// ticket. Without hydration the page loads @derockdev/discord-components-core
+// from cdn.jsdelivr.net to render the custom elements in a browser.
+export async function renderDiscordTranscriptHtml(opts: {
+  channel: TextChannel
+  messages: Message[]
+  ticketId: number
+  filename: string
+}): Promise<string> {
+  const { channel, messages, ticketId, filename } = opts
+  return generateFromMessages(messages, channel, {
+    returnType: ExportReturnType.String,
+    saveImages: false,
+    poweredBy: false,
+    filename,
+    footerText: `Ticket #${ticketId} · ${channel.guild.name} · #${channel.name} · {number} message{s}`,
+  })
+}
+
+// Legacy hand-rolled HTML. Only used as the DM attachment when the
+// Discord-style renderer throws, so the opener still gets a transcript.
 export function renderTranscriptHtml(opts: {
   guildName: string
   channelName: string
