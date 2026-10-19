@@ -1,7 +1,7 @@
 import type { AddressInfo } from 'node:net'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { eq } from 'drizzle-orm'
-import { MessageFlags } from 'discord.js'
+import { ChannelType, MessageFlags } from 'discord.js'
 import { db } from '../src/db/client'
 import { businesses, ticketPanels } from '../src/db/schema'
 import type { Business } from '../src/db/schema'
@@ -22,10 +22,14 @@ afterEach(() => {
 const CATS = [{ key: 'support', label: 'Support', emoji: '🎫', description: null }] as any
 const LEGACY = { content: 'old', embeds: [{ title: 'Contact us', description: 'Click below' }] }
 
-async function team(name: string, opts: Parameters<typeof seedTeam>[0] = {}) {
+async function team(
+  name: string,
+  opts: Parameters<typeof seedTeam>[0] = {},
+  channelType: ChannelType.GuildText | ChannelType.GuildAnnouncement = ChannelType.GuildText,
+) {
   const t = await seedTeam({ category: { key: 'support', label: 'Support' }, ...opts })
   const [business] = await db.update(businesses).set({ name }).where(eq(businesses.id, t.business.id)).returning()
-  const channel = await t.guild.channels.create({ name: 'contact' })
+  const channel = await t.guild.channels.create({ name: 'contact', type: channelType })
   return { ...t, business, channel }
 }
 
@@ -228,5 +232,99 @@ describe('POST /api/internal/panel/post', () => {
     expect(none.status).toBe(409)
     expect(none.body).toMatchObject({ ok: false, error: 'no_categories' })
     expect(t.channel.sent).toHaveLength(0)
+  })
+})
+
+// v0.10.2: #contact on the live server is an announcement channel (type 5).
+describe('panels in announcement channels', () => {
+  const body = (t: { guild: FakeGuild; channel: FakeTextChannel; business: Business }, extra: Record<string, unknown> = {}) => ({
+    guildId: t.guild.id,
+    channelId: t.channel.id,
+    business: t.business.slug,
+    ...extra,
+  })
+
+  it('the route posts a new panel and adopts a bot message in an announcement channel', async () => {
+    const t = await team('EuphoricFM', {}, ChannelType.GuildAnnouncement)
+    const client = fakeClient(t.guild)
+    const created = await handlePanelPost(client, body(t))
+    expect(created.status).toBe(201)
+    expect(created.body).toMatchObject({ ok: true, channelId: t.channel.id, adopted: false })
+    expect(componentsJson(t.channel.sent[0])).toContain('Open a Ticket · EuphoricFM')
+
+    const legacy = t.channel.addMessage(BOT_ID, LEGACY)
+    const adopted = await handlePanelPost(client, body(t, { messageId: legacy.id }))
+    expect(adopted.status).toBe(200)
+    expect(adopted.body).toMatchObject({ ok: true, messageId: legacy.id, adopted: true })
+    expect(legacy.edits[0]).toMatchObject({ content: null, embeds: [], flags: MessageFlags.IsComponentsV2 })
+    expect((await panelRow(legacy.id)).channelId).toBe(t.channel.id)
+  })
+
+  it('/panel post (adopt) and /panel refresh work in an announcement channel', async () => {
+    const t = await team('Serenade Supply Co', {}, ChannelType.GuildAnnouncement)
+    const mod = t.guild.addMember({ username: 'mod', manageGuild: true })
+    const legacy = t.channel.addMessage(BOT_ID, LEGACY)
+    const base = {
+      inGuild: () => true,
+      guild: t.guild,
+      guildId: t.guild.id,
+      channelId: t.channel.id,
+      channel: t.channel,
+      user: { id: mod.id },
+      client: fakeClient(t.guild),
+      reply: vi.fn(async () => {}),
+      editReply: vi.fn(async () => {}),
+      deferReply: vi.fn(async () => {}),
+    }
+    const post = { ...base, options: { getSubcommand: () => 'post', getString: (n: string) => (n === 'message_id' ? legacy.id : null) } }
+    await executePanel(post as any)
+    expect(post.reply).not.toHaveBeenCalled()
+    expect(post.editReply).toHaveBeenCalledWith(expect.stringContaining('into the **Serenade Supply Co** panel'))
+
+    const fresh = { ...base, options: { getSubcommand: () => 'post', getString: () => null } }
+    await executePanel(fresh as any)
+    expect(componentsJson(t.channel.sent[0])).toContain('Open a Ticket · Serenade Supply Co')
+
+    const refresh = { ...base, editReply: vi.fn(async () => {}), options: { getSubcommand: () => 'refresh', getString: (n: string) => (n === 'message_id' ? legacy.id : null) } }
+    await executePanel(refresh as any)
+    expect(refresh.editReply).toHaveBeenCalledWith(expect.stringContaining('✓ Refreshed panel'))
+    expect(legacy.edits).toHaveLength(2)
+  })
+
+  it('voice / forum / category channels are still refused (404); another guild\'s channel is 404, not 503', async () => {
+    const t = await team('EuphoricFM')
+    const client = fakeClient(t.guild)
+    for (const type of [ChannelType.GuildVoice, ChannelType.GuildForum, ChannelType.GuildCategory, ChannelType.GuildStageVoice]) {
+      const id = t.guild.addChannelOfType(type)
+      const r = await handlePanelPost(client, body(t, { channelId: id }))
+      expect(r.status, `type ${type}`).toBe(404)
+      expect(r.body).toMatchObject({ ok: false, error: 'channel_not_found' })
+    }
+    const other = await team('Elsewhere')
+    const cross = await handlePanelPost(client, body(t, { channelId: other.channel.id }))
+    expect(cross.status).toBe(404)
+    expect(cross.body).toMatchObject({ ok: false, error: 'channel_not_found' })
+    expect(other.channel.sent).toHaveLength(0)
+  })
+
+  it('/panel post refuses a non-panel channel type', async () => {
+    const t = await team('EuphoricFM')
+    const mod = t.guild.addMember({ username: 'mod', manageGuild: true })
+    const voice = { id: t.guild.addChannelOfType(ChannelType.GuildVoice), type: ChannelType.GuildVoice }
+    const i = {
+      inGuild: () => true,
+      guild: t.guild,
+      guildId: t.guild.id,
+      channelId: voice.id,
+      channel: voice,
+      user: { id: mod.id },
+      client: fakeClient(t.guild),
+      options: { getSubcommand: () => 'post', getString: () => null },
+      reply: vi.fn(async () => {}),
+      editReply: vi.fn(async () => {}),
+      deferReply: vi.fn(async () => {}),
+    }
+    await executePanel(i as any)
+    expect(i.reply).toHaveBeenCalledWith({ content: 'Run this in a text or announcement channel.', ephemeral: true })
   })
 })

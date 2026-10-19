@@ -1,4 +1,4 @@
-import type { Client, TextChannel } from 'discord.js'
+import { ChannelType, type Client, type Guild, type NewsChannel, type TextChannel } from 'discord.js'
 import { eq, or } from 'drizzle-orm'
 import { z } from 'zod'
 import { db } from '../db/client'
@@ -6,13 +6,40 @@ import { businesses, type Business } from '../db/schema/businesses'
 import { ticketPanels } from '../db/schema/ticketPanels'
 import { getPanelCategories } from './settingsService'
 import { buildPanelEditPayload, buildPanelMessage } from './ticketRenderer'
-import { lookupTextChannel, type RouteResult } from './integrationTickets'
+import type { RouteResult } from './integrationTickets'
 import { log } from './logger'
 
 // v0.10.1 — posting a team's ticket panel, shared by `/panel post` and the
 // internal `POST /api/internal/panel/post` route. Panels are one team per
 // message: the ticket_panels row (message_id unique) maps the message to its
 // team, which is what `tk:open:<key>` resolves against.
+
+// Panels can live in regular text channels and announcement (news) channels
+// (v0.10.2 — e.g. a read-only #contact). Ticket channels stay GuildText only.
+export type PanelChannel = TextChannel | NewsChannel
+
+export function isPanelChannelType(type: ChannelType): boolean {
+  return type === ChannelType.GuildText || type === ChannelType.GuildAnnouncement
+}
+
+// Panel-specific strict lookup (the ticket routes keep lookupTextChannel).
+// `gone`: Discord 10003 Unknown Channel, a channel of another guild (discord.js
+// GuildChannelUnowned), or a channel that can't hold a panel (voice, forum,
+// category…). Anything else is transient.
+export async function lookupPanelChannel(
+  guild: Guild,
+  channelId: string,
+): Promise<{ kind: 'ok'; channel: PanelChannel } | { kind: 'gone' } | { kind: 'error'; error: unknown }> {
+  let ch
+  try {
+    ch = await guild.channels.fetch(channelId)
+  } catch (e) {
+    const code = (e as { code?: unknown } | null)?.code
+    return code === 10003 || code === 'GuildChannelUnowned' ? { kind: 'gone' } : { kind: 'error', error: e }
+  }
+  if (!ch) return { kind: 'error', error: new Error('channel fetch returned nothing') }
+  return isPanelChannelType(ch.type) ? { kind: 'ok', channel: ch as PanelChannel } : { kind: 'gone' }
+}
 
 export type PanelPostError = {
   ok: false
@@ -25,7 +52,7 @@ export type PanelPostResult =
   | PanelPostError
 
 export async function postTeamPanel(opts: {
-  channel: TextChannel
+  channel: PanelChannel
   business: Business
   botUserId: string
   postedBy: string
@@ -133,8 +160,10 @@ export async function handlePanelPost(client: Client, raw: unknown): Promise<Rou
 
   const guild = client.guilds.cache.get(body.guildId)
   if (!guild) return routeErr(503, 'guild_unavailable', `The bot is not in guild ${body.guildId} (or it is unavailable).`)
-  const found = await lookupTextChannel(guild, body.channelId)
-  if (found.kind === 'gone') return routeErr(404, 'channel_not_found', `Channel ${body.channelId} is not a text channel in that guild.`)
+  const found = await lookupPanelChannel(guild, body.channelId)
+  if (found.kind === 'gone') {
+    return routeErr(404, 'channel_not_found', `Channel ${body.channelId} is not a text or announcement channel in that guild.`)
+  }
   if (found.kind === 'error') return routeErr(503, 'guild_unavailable', 'Channel lookup failed; retry.')
 
   const botUserId = client.user!.id

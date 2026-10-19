@@ -82,8 +82,13 @@ export class FakeMessage {
   }
 }
 
+// Every fake guild's channels, so a guild can tell "another guild's channel"
+// (discord.js GuildChannelUnowned) from "unknown channel" (10003).
+const allChannels = new Map<string, FakeGuild>()
+
 export class FakeTextChannel {
-  type = ChannelType.GuildText
+  // GuildText by default; GuildAnnouncement for news channels (same API).
+  type: ChannelType = ChannelType.GuildText
   sent: Sent[] = []
   webhooks: FakeWebhook[] = []
   deleted = false
@@ -235,8 +240,13 @@ export class FakeGuild {
     }
   }
   addCategory(): string {
+    return this.addChannelOfType(ChannelType.GuildCategory)
+  }
+  // A non-message channel (category, voice, forum…) — only id + type.
+  addChannelOfType(type: ChannelType): string {
     const id = snow()
-    this.channelMap.set(id, { id, type: ChannelType.GuildCategory })
+    this.channelMap.set(id, { id, type })
+    allChannels.set(id, this)
     return id
   }
   addMember(opts: ConstructorParameters<typeof FakeMember>[2] = {}, id = snow()): FakeMember {
@@ -253,14 +263,23 @@ export class FakeGuild {
       parent?: string
       permissionOverwrites?: { id: string; allow?: bigint[]; deny?: bigint[] }[]
       topic?: string
+      type?: ChannelType.GuildText | ChannelType.GuildAnnouncement
     }): Promise<FakeTextChannel> => {
       const ch = new FakeTextChannel(this, snow(), opts.name, opts.parent ?? null, opts.permissionOverwrites ?? [], opts.topic)
+      if (opts.type !== undefined) ch.type = opts.type
       this.channelMap.set(ch.id, ch)
+      allChannels.set(ch.id, this)
       return ch
     },
     fetch: async (id: string) => {
       const ch = this.channelMap.get(id)
-      if (!ch) throw Object.assign(new Error('Unknown Channel'), { code: 10003 })
+      if (!ch) {
+        const owner = allChannels.get(id)
+        if (owner && owner !== this) {
+          throw Object.assign(new Error('The fetched channel does not belong to this manager’s guild.'), { code: 'GuildChannelUnowned' })
+        }
+        throw Object.assign(new Error('Unknown Channel'), { code: 10003 })
+      }
       return ch
     },
   }
