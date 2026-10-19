@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.10.1] — 2026-10-19 — Team-named panels, adopting existing messages, internal panel route
+
+No schema change; no web deploy required. Slash-command change (`/panel post message_id:`) — picked up by the deploy workflow's `node dist/bot/registerCommands.js` step (guild-scoped to `GUILD_ID`).
+
+### Added
+- **Team name on panels.** `buildPanelMessage(categories, teamName)` (`src/services/ticketRenderer.ts`) heads the panel `## 🎫 Open a Ticket · <Team>` (markdown in the name escaped with `escapeMarkdown`), so several teams' panels in one channel are distinguishable. `/panel refresh` uses the panel's own team, or the guild default team for older panels (no suffix when there is none).
+- **Adopting an existing message.** `/panel post` takes an optional `message_id`: the message (in the current channel) must have been sent by this bot account, otherwise the command refuses ephemerally; it is edited in place into the team's panel and the `ticket_panels` row is upserted on `message_id`. Intended for converting a legacy classic-embed message from older bot software.
+- **`POST /api/internal/panel/post`** (`x-internal-token`, same constant-time check): body `{guildId, channelId, business: <slug or id>, messageId?, postedBy?}` (zod). Checks the team belongs to `guildId` and the channel is a text channel in that guild, refuses a team with no public categories, then posts a new panel (`201`) or adopts `messageId` (`200`, bot-authored, same channel) and upserts `ticket_panels` (`posted_by_discord_id` = `postedBy` or the bot user id). Returns `{ok, messageId, channelId, business, categories, adopted}`; errors are `{ok:false, error, message}` (contract table in `CLAUDE.md`).
+- **Shared logic.** Both paths go through `postTeamPanel` (new `src/services/panelService.ts`).
+
+### Changed
+- **Editing into a Components V2 panel clears legacy fields.** New `buildPanelEditPayload` adds `content: null` (sent as `""`), `embeds: []` and `attachments: []` to the panel payload; used by `/panel refresh` and adoption. Discord rejects the `IS_COMPONENTS_V2` flag on a message that still has content/embeds, and the flag cannot be removed once set.
+- A team whose categories are all staff-only / integration-only is now refused (`409 no_categories` / an ephemeral message) instead of posting a panel with an empty button row.
+
+### Tests
+- 186 tests (was 175). New `test/teamPanels.test.ts`: heading with the team name + escaping, no suffix without a name; edit payload clears content/embeds/attachments with the V2 flag; new post inserts the row; adopting a bot message edits it in place and takes over an existing row for that message (no duplicate); a foreign-authored or missing message is refused with nothing edited or stored; zero public categories refused; `/panel post message_id:` adopts on a multi-team server and refuses a foreign message, and `/panel refresh` keeps the team name (also the guild-default fallback); the internal route needs the token, posts by slug (`201`), adopts by business id with `postedBy` (`200`), and returns `400` validation, `404` unknown team / channel / non-text channel, `403` another guild's team, `409` zero categories. `internalToken.test.ts` covers the new route's `401`s.
+
 ## [0.10.0] — 2026-10-18 — Discord-style HTML transcripts on copium.pics
 
 No schema change; no web deploy required. copium.pics 1.12+ renders uploaded Discord transcripts like the real channel on `transcripts.copium.tools`.

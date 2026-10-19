@@ -122,7 +122,7 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
       new TextDisplayBuilder().setContent(
         [
           '### Sudo',
-          '• `/panel post` / `/panel refresh` — post or re-render the ticket panel.',
+          '• `/panel post` / `/panel refresh` — post or re-render the ticket panel (`message_id:` on post turns an existing message by this bot into the panel).',
           '• `/tickets settings` — quick in-Discord config.',
           '• `/admin sudo grant|revoke|list` — manage sudo users.',
           '• `/admin business create|list|delete` — manage teams from Discord.',
