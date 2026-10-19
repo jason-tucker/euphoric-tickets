@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { eq } from 'drizzle-orm'
-import { ChannelType, MessageFlags, PermissionFlagsBits } from 'discord.js'
+import { ChannelType, Collection, MessageFlags, PermissionFlagsBits } from 'discord.js'
 import { db } from '../src/db/client'
-import { env } from '../src/config/env'
+import { env, envSchema } from '../src/config/env'
 import { auditLogs, integrations, tickets, users } from '../src/db/schema'
 import { handleIntegrationClose, handleIntegrationOpen } from '../src/services/integrationTickets'
 import { handleTicketClaim } from '../src/interactions/buttons/ticketClaim'
@@ -10,6 +10,10 @@ import { handleTicketClose } from '../src/interactions/buttons/ticketClose'
 import { execute as executeTickets, executeCloseConfirm } from '../src/commands/tickets'
 import { componentsJson, fakeClient, seedTeam, type FakeGuild, type FakeMember, type FakeTextChannel } from './fakes'
 import { openBody, seedIntegration, stubFetch } from './helpers'
+import { LIBRARY_COMPONENTS_SRC, PINNED_COMPONENTS_SRC, TRANSCRIPT_CSP } from '../src/services/transcriptSanitizer'
+import * as transcriptSanitizer from '../src/services/transcriptSanitizer'
+import * as transcriptService from '../src/services/transcriptService'
+import { sampleConversation } from './fixtures/sampleConversation'
 
 const ADMIN_ROLE = '200000000000000010' // team admin_role_ids ("Ticket Master")
 const MANAGER_ROLE = '200000000000000011' // category staff only (EFM Managers)
@@ -350,19 +354,29 @@ describe('POST /api/internal/tickets/close', () => {
 
 
 // v0.9.0: closing also posts a copium.pics text paste and links it in the DM.
+// v0.10.0: the Discord-style HTML upload is tried first; these 0.9.0 tests
+// make it fail (default upload response: 500) and so exercise the text-paste
+// fallback.
 describe('Close → copium.pics transcript paste', () => {
   const PAGE_URL = 'https://tucker.copium.pics/i/qVx79Apa'
   let pasteCalls: { url: string; init: RequestInit }[]
   let albumCalls: { url: string; init: RequestInit }[]
+  let uploadCalls: { url: string; init: RequestInit }[]
 
   function routeCopium(
     response: () => Response | Promise<Response>,
     albumResponse: () => Response | Promise<Response> = () => new Response(JSON.stringify({ added: 1, album: {} }), { status: 200 }),
+    uploadResponse: () => Response | Promise<Response> = () => new Response(JSON.stringify({ error: 'boom' }), { status: 500 }),
   ) {
     pasteCalls = []
     albumCalls = []
+    uploadCalls = []
     vi.mocked(globalThis.fetch).mockImplementation(async (input: any, init?: any) => {
       const url = String(input instanceof Request ? input.url : input)
+      if (url.startsWith('https://v.copium.pics/')) {
+        uploadCalls.push({ url, init })
+        return uploadResponse()
+      }
       if (url.startsWith('https://copium.pics/api/albums/')) {
         albumCalls.push({ url, init })
         return albumResponse()
@@ -389,10 +403,13 @@ describe('Close → copium.pics transcript paste', () => {
     return t
   }
 
-  it('success: the DM carries the paste link (custom host) and the column is set', async () => {
+  it('upload fails → paste fallback: the DM carries the paste link (custom host) and the column is set', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
     const s = await openIntegrationTicket()
     routeCopium(() => new Response(JSON.stringify({ id: 'qVx79Apa', pageUrl: PAGE_URL }), { status: 201 }))
     const t = await close(s)
+
+    expect(uploadCalls).toHaveLength(1)
 
     expect(pasteCalls).toHaveLength(1)
     const body = JSON.parse(String(pasteCalls[0].init.body))
@@ -420,7 +437,7 @@ describe('Close → copium.pics transcript paste', () => {
     expect(s.opener.sentDMs[0].content).toContain('Transcript: https://i.tucker.host/i/qVx79Apa')
   })
 
-  it('failure (401): close still completes, the DM is still sent without the link, column untouched', async () => {
+  it('upload + paste both fail (401): close still completes, the DM is still sent without the link, column untouched', async () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {})
     const s = await openIntegrationTicket()
     routeCopium(() => new Response(JSON.stringify({ error: 'Upload token is invalid or was revoked' }), { status: 401 }))
@@ -447,12 +464,15 @@ describe('Close → copium.pics transcript paste', () => {
     expect(s.opener.sentDMs[0].content).not.toContain('Transcript:')
   })
 
-  it('disabled (no COPIUM_TOKEN): no paste request at all', async () => {
-    Object.assign(env, { COPIUM_TOKEN: undefined })
+  it('disabled (no COPIUM_TOKEN): no upload, paste or album request at all', async () => {
+    Object.assign(env, { COPIUM_TOKEN: undefined, COPIUM_ALBUM_ID: 'alb123' })
     const s = await openIntegrationTicket()
     routeCopium(() => new Response(JSON.stringify({ pageUrl: PAGE_URL }), { status: 201 }))
     const t = await close(s)
+    await new Promise((r) => setTimeout(r, 50))
+    expect(uploadCalls).toHaveLength(0)
     expect(pasteCalls).toHaveLength(0)
+    expect(albumCalls).toHaveLength(0)
     expect(t.externalTranscriptUrl).toBeNull()
     expect(s.opener.sentDMs[0].content).not.toContain('Transcript:')
   })
@@ -526,5 +546,222 @@ describe('Close → copium.pics transcript paste', () => {
     expect(s.opener.sentDMs[0].content).toContain('Transcript: https://i.tucker.host/i/qVx79Apa')
     const audits = await db.select().from(auditLogs).where(eq(auditLogs.ticketId, s.ticketId))
     expect(audits.some((a) => a.action === 'closed')).toBe(true)
+  })
+
+  const HTML_LINK = 'https://transcripts.copium.tools/TDTwf8Cu.html'
+  const htmlUploadOk = () =>
+    new Response(
+      JSON.stringify({
+        key: 'TDTwf8Cu.html',
+        kind: 'html',
+        id: 'TDTwf8Cu',
+        url: HTML_LINK,
+        messages: 2,
+        pageUrl: 'https://tucker.copium.pics/i/TDTwf8Cu',
+        link: HTML_LINK,
+      }),
+      { status: 201 },
+    )
+
+  it('HTML upload success: DM has the transcripts.copium.tools link, column set, album gets the html id, no paste', async () => {
+    Object.assign(env, { COPIUM_ALBUM_ID: 'alb123' })
+    const s = await openIntegrationTicket()
+    routeCopium(() => new Response(JSON.stringify({ id: 'qVx79Apa', pageUrl: PAGE_URL }), { status: 201 }), undefined, htmlUploadOk)
+    const t = await close(s)
+
+    expect(uploadCalls).toHaveLength(1)
+    expect(uploadCalls[0].url).toBe('https://v.copium.pics/api/upload?wait=1')
+    const form = uploadCalls[0].init.body as FormData
+    const file = form.get('file') as File
+    expect(file.name).toBe(`ticket-${s.ticketId}-${s.channel.name}.html`)
+    expect(file.type).toBe('text/html')
+    expect(await file.text()).toContain('<discord-messages')
+    expect(form.get('title')).toBe(`Ticket #${s.ticketId} — ${s.channel.name} (Test Guild)`)
+    expect(pasteCalls).toHaveLength(0)
+
+    // COPIUM_LINK_HOST (i.tucker.host) is NOT applied to the HTML link.
+    expect(t.externalTranscriptUrl).toBe(HTML_LINK)
+    expect(s.channel.deleted).toBe(true)
+    expect(s.opener.sentDMs).toHaveLength(1)
+    const dm = s.opener.sentDMs[0].content!
+    expect(dm).toContain(`\n\nTranscript: ${HTML_LINK}`)
+    expect(dm).toContain(`https://tickets.example.test/b/${s.second.business.slug}/tickets/${s.ticketId}`)
+    const files = (s.opener.sentDMs[0] as any).files
+    expect(files).toHaveLength(1)
+    expect(String(files[0].attachment)).toContain('<discord-messages')
+
+    // Sanitized variants: copium gets no CSP meta and the library's script
+    // src (it swaps in its vendored copy); the DM file gets the CSP meta and
+    // the components script pinned to an exact version.
+    const uploaded = await file.text()
+    const attached = String(files[0].attachment)
+    expect(uploaded).not.toContain('http-equiv')
+    expect(uploaded).toContain(`<script type="module" src="${LIBRARY_COMPONENTS_SRC}"></script>`)
+    expect(attached).toContain(`<meta http-equiv="Content-Security-Policy" content="${TRANSCRIPT_CSP}">`)
+    expect(attached).toContain(`<script type="module" src="${PINNED_COMPONENTS_SRC}"></script>`)
+    expect(attached.match(/<script/g)).toHaveLength(1)
+    expect(uploaded.match(/<script/g)).toHaveLength(1)
+
+    await vi.waitFor(() => expect(albumCalls).toHaveLength(1))
+    expect(JSON.parse(String(albumCalls[0].init.body))).toEqual({ imageIds: ['TDTwf8Cu'] })
+  })
+
+  it('HTML upload fails → the paste link is used and its id goes to the album', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    Object.assign(env, { COPIUM_ALBUM_ID: 'alb123' })
+    for (const uploadResponse of [
+      () => new Response(JSON.stringify({ error: 'Upload token is invalid or was revoked' }), { status: 401 }),
+      () => new Response('not json', { status: 201 }),
+      (): Response => {
+        throw new TypeError('fetch failed')
+      },
+    ]) {
+      const s = await openIntegrationTicket()
+      routeCopium(() => new Response(JSON.stringify({ id: 'qVx79Apa', pageUrl: PAGE_URL }), { status: 201 }), undefined, uploadResponse)
+      const t = await close(s)
+      expect(uploadCalls).toHaveLength(1)
+      expect(pasteCalls).toHaveLength(1)
+      expect(t.externalTranscriptUrl).toBe('https://i.tucker.host/i/qVx79Apa')
+      expect(s.opener.sentDMs[0].content).toContain('Transcript: https://i.tucker.host/i/qVx79Apa')
+      await vi.waitFor(() => expect(albumCalls).toHaveLength(1))
+      expect(JSON.parse(String(albumCalls[0].init.body))).toEqual({ imageIds: ['qVx79Apa'] })
+    }
+  })
+
+  it('DM too large (413): retried once without the attachment, keeping the Transcript link', async () => {
+    const s = await openIntegrationTicket()
+    s.opener.dmError = (payload) => (payload.files?.length ? Object.assign(new Error('Request entity too large'), { status: 413 }) : null)
+    routeCopium(() => new Response('{}', { status: 500 }), undefined, htmlUploadOk)
+    const t = await close(s)
+    expect(t.status).toBe('closed')
+    expect(s.opener.dmAttempts).toHaveLength(2)
+    expect(s.opener.dmAttempts[0].files).toHaveLength(1)
+    expect(s.opener.sentDMs).toHaveLength(1)
+    const dm = s.opener.sentDMs[0] as { content?: string; files?: unknown[] }
+    expect(dm.files).toBeUndefined()
+    expect(dm.content).toContain(`Transcript: ${HTML_LINK}`)
+    expect(dm.content).not.toContain('A full transcript is attached.')
+  })
+
+  it('DM too large with error code 40005 also retries', async () => {
+    const s = await openIntegrationTicket()
+    s.opener.dmError = (payload) => (payload.files?.length ? Object.assign(new Error('Request entity too large'), { code: 40005 }) : null)
+    routeCopium(() => new Response('{}', { status: 500 }), undefined, htmlUploadOk)
+    await close(s)
+    expect(s.opener.dmAttempts).toHaveLength(2)
+    expect(s.opener.sentDMs).toHaveLength(1)
+    expect(s.opener.sentDMs[0].content).toContain(`Transcript: ${HTML_LINK}`)
+  })
+
+  it('DMs closed (50007): no retry, close still completes', async () => {
+    const s = await openIntegrationTicket()
+    s.opener.dmError = () => Object.assign(new Error('Cannot send messages to this user'), { code: 50007, status: 403 })
+    routeCopium(() => new Response('{}', { status: 500 }), undefined, htmlUploadOk)
+    const t = await close(s)
+    expect(s.opener.dmAttempts).toHaveLength(1)
+    expect(s.opener.sentDMs).toHaveLength(0)
+    expect(t.status).toBe('closed')
+    expect(s.channel.deleted).toBe(true)
+  })
+
+  // Fallback paths: the DM still gets an HTML file (the legacy, escaped one)
+  // and copium the text paste; close always completes.
+  const pasteOk = () => new Response(JSON.stringify({ id: 'qVx79Apa', pageUrl: PAGE_URL }), { status: 201 })
+  async function expectLegacyFallback(s: Awaited<ReturnType<typeof openIntegrationTicket>>, t: Awaited<ReturnType<typeof close>>) {
+    expect(uploadCalls).toHaveLength(0)
+    expect(pasteCalls).toHaveLength(1)
+    expect(JSON.parse(String(pasteCalls[0].init.body)).language).toBe('plaintext')
+    expect(t.status).toBe('closed')
+    expect(t.externalTranscriptUrl).toBe('https://i.tucker.host/i/qVx79Apa')
+    expect(s.channel.deleted).toBe(true)
+    expect(s.opener.sentDMs).toHaveLength(1)
+    const dm = s.opener.sentDMs[0] as { content?: string; files?: { attachment: unknown; name: string }[] }
+    expect(dm.content).toContain('\n\nTranscript: https://i.tucker.host/i/qVx79Apa')
+    expect(dm.content).toContain('A full transcript is attached.')
+    expect(dm.files).toHaveLength(1)
+    expect(dm.files![0].name).toBe(`ticket-${s.ticketId}-${s.channel.name}.html`)
+    const attached = String(dm.files![0].attachment)
+    expect(attached).toContain(`<h1>Ticket #${s.ticketId} — #${s.channel.name}</h1>`) // legacy renderTranscriptHtml
+    expect(attached).not.toContain('<discord-messages')
+    expect(attached).not.toMatch(/<script/i)
+    return attached
+  }
+
+  it('Discord-style render throws → legacy HTML attached, text paste used, no HTML upload, close completes', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    vi.spyOn(transcriptService, 'renderDiscordTranscriptHtml').mockRejectedValue(new Error('render boom'))
+    const s = await openIntegrationTicket()
+    routeCopium(pasteOk, undefined, htmlUploadOk)
+    const t = await close(s)
+    await expectLegacyFallback(s, t)
+    expect(warn.mock.calls.map((c) => String(c[0])).some((l) => l.includes('Discord-style transcript render failed'))).toBe(true)
+  })
+
+  it('sanitizer verification throws → same legacy fallback', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const sanitize = vi.spyOn(transcriptSanitizer, 'sanitizeTranscriptHtml').mockImplementation(() => {
+      throw new Error('transcript sanitizer: output failed verification (2 script elements)')
+    })
+    const s = await openIntegrationTicket()
+    routeCopium(pasteOk, undefined, htmlUploadOk)
+    const t = await close(s)
+    expect(sanitize).toHaveBeenCalledTimes(1)
+    await expectLegacyFallback(s, t)
+    expect(warn.mock.calls.map((c) => String(c[0])).some((l) => l.includes('output failed verification'))).toBe(true)
+  })
+
+  describe('TRANSCRIPT_DISCORD_MAX_MESSAGES', () => {
+    afterEach(() => {
+      Object.assign(env, { TRANSCRIPT_DISCORD_MAX_MESSAGES: 600 })
+    })
+
+    // The fixture's 4 real discord.js messages, served by the fake channel.
+    async function ticketWithFourMessages() {
+      const s = await openIntegrationTicket()
+      const conv = sampleConversation()
+      s.channel.messages = { fetch: async () => new Collection(conv.messages.map((m) => [m.id, m])) } as any
+      return { s, conv }
+    }
+
+    it('defaults to 600', () => {
+      expect(envSchema.parse({ ...process.env, TRANSCRIPT_DISCORD_MAX_MESSAGES: undefined }).TRANSCRIPT_DISCORD_MAX_MESSAGES).toBe(600)
+      expect(envSchema.parse({ ...process.env, TRANSCRIPT_DISCORD_MAX_MESSAGES: '25' }).TRANSCRIPT_DISCORD_MAX_MESSAGES).toBe(25)
+      expect(envSchema.safeParse({ ...process.env, TRANSCRIPT_DISCORD_MAX_MESSAGES: '-1' }).success).toBe(false)
+    })
+
+    it('over the cap: renderer never runs, no HTML upload, text paste + legacy attachment, info line with the count', async () => {
+      const info = vi.spyOn(console, 'log').mockImplementation(() => {})
+      const render = vi.spyOn(transcriptService, 'renderDiscordTranscriptHtml')
+      Object.assign(env, { TRANSCRIPT_DISCORD_MAX_MESSAGES: 3 })
+      const { s, conv } = await ticketWithFourMessages()
+      try {
+        routeCopium(pasteOk, undefined, htmlUploadOk)
+        const t = await close(s)
+        expect(render).not.toHaveBeenCalled()
+        const attached = await expectLegacyFallback(s, t)
+        expect(attached).toContain('That worked, thank you!')
+        expect(JSON.parse(String(pasteCalls[0].init.body)).content).toContain('That worked, thank you!')
+        const line = info.mock.calls.map((c) => String(c[0])).find((l) => l.includes('over the Discord-style message cap'))
+        expect(line).toBeDefined()
+        expect(line).toContain('"messages":4')
+        expect(line).toContain('"cap":3')
+      } finally {
+        await conv.client.destroy()
+      }
+    })
+
+    it('exactly at the cap (count === cap) the Discord-style transcript is still rendered and uploaded', async () => {
+      // The fake channel has 0 messages; cap 0 → 0 > 0 is false.
+      Object.assign(env, { TRANSCRIPT_DISCORD_MAX_MESSAGES: 0 })
+      const render = vi.spyOn(transcriptService, 'renderDiscordTranscriptHtml')
+      const s = await openIntegrationTicket()
+      routeCopium(pasteOk, undefined, htmlUploadOk)
+      const t = await close(s)
+      expect(render).toHaveBeenCalledTimes(1)
+      expect(uploadCalls).toHaveLength(1)
+      expect(pasteCalls).toHaveLength(0)
+      expect(t.externalTranscriptUrl).toBe(HTML_LINK)
+      expect(String((s.opener.sentDMs[0] as any).files[0].attachment)).toContain('<discord-messages')
+    })
   })
 })

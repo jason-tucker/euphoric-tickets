@@ -15,8 +15,8 @@ import { ticketCategories, type TicketCategory } from '../db/schema/ticketCatego
 import { getBusinessByGuildId } from './businessResolver'
 import { getOrCreateUserByDiscordId, getDiscordIdForUserId } from './userResolver'
 import { buildTicketWelcome, renderFirstMessage } from './ticketRenderer'
-import { fetchAllMessages, renderTranscriptHtml, renderTranscriptText } from './transcriptService'
-import { addToAlbum, createPaste, isCopiumEnabled } from './copiumService'
+import { fetchAllMessages, renderDiscordTranscriptHtml, renderTranscriptHtml, renderTranscriptText } from './transcriptService'
+import { addToAlbum, createPaste, isCopiumEnabled, uploadHtml } from './copiumService'
 import { logTicketEvent } from './ticketLogger'
 import { log } from './logger'
 import { canOpenCategory, staffRoleIdsForCategory } from './permissions'
@@ -663,38 +663,65 @@ export async function closeTicket(opts: {
       closedByTag: closer.user.tag,
       messages,
     }
-    const html = renderTranscriptHtml(transcriptInput)
+    const filename = `ticket-${ticket.id}-${channel.name}.html`
+    // Discord-style HTML (v0.10.0), sanitized (transcriptSanitizer.ts): the
+    // `attachment` variant (CSP meta, pinned components script) is the DM
+    // file, the `upload` variant goes to copium. If rendering or sanitizing
+    // throws, the DM falls back to the legacy HTML and copium to the text paste.
+    // Over TRANSCRIPT_DISCORD_MAX_MESSAGES the Discord-style renderer is
+    // skipped entirely (memory: it peaks at hundreds of MB for long tickets):
+    // legacy HTML for the DM, text paste for copium.
+    const discordCap = env.TRANSCRIPT_DISCORD_MAX_MESSAGES
+    const overCap = messages.length > discordCap
+    if (overCap) {
+      log.info('Transcript over the Discord-style message cap; using the legacy HTML and the text paste', {
+        ticketId: ticket.id,
+        messages: messages.length,
+        cap: discordCap,
+      })
+    }
+    const discordHtml = overCap
+      ? null
+      : await renderDiscordTranscriptHtml({ channel, messages, ticketId: ticket.id, filename }).catch((err) => {
+          log.warn('Discord-style transcript render failed; using the legacy HTML', { ticketId: ticket.id, err: String(err) })
+          return null
+        })
+    const html = discordHtml?.attachment ?? renderTranscriptHtml(transcriptInput)
     const buf = Buffer.from(html, 'utf8')
 
-    // copium.pics text paste (v0.9.0) — before the DM so the link can go in it.
-    // Best-effort and bounded by the paste timeout: on any failure the link is
-    // simply omitted. Runs whether or not the opener can be DMed, so the web
-    // dashboard still gets the link. The album add (if configured) is
-    // fire-and-forget, so close latency is bounded by the paste timeout alone.
-    const pasteUrl = await postTranscriptPaste(ticket.id, transcriptInput, closedAt)
+    // copium.pics transcript — before the DM so the link can go in it.
+    // Best-effort: on any failure the link is simply omitted. Runs whether or
+    // not the opener can be DMed, so the web dashboard still gets the link.
+    // Close waits at most the upload timeout (30 s), plus the paste timeout
+    // (15 s) only when the upload fails and the text paste is tried. The album
+    // add (if configured) is fire-and-forget.
+    const transcriptUrl = await publishTranscript(
+      ticket.id,
+      { discordHtml: discordHtml?.upload ?? null, filename, text: transcriptInput },
+      closedAt,
+    )
 
     if (opener) {
-      const dmFile = new AttachmentBuilder(buf, {
-        name: `ticket-${ticket.id}-${channel.name}.html`,
-      })
+      const dmFile = new AttachmentBuilder(buf, { name: filename })
       // Best-effort web link: if the guild isn't tied to a business row, omit it.
       const webLink = business
         ? `${env.WEB_BASE_URL}/b/${business.slug}/tickets/${ticket.id}`
         : null
-      const content =
+      const body =
         `Your ticket **#${ticket.id}** in **${guild.name}** was closed by ${closer.user.tag}.` +
         (opts.reason ? `\n\nReason: ${opts.reason.slice(0, 500)}` : '') +
         (webLink ? `\n\nView the conversation on the web: ${webLink}` : '') +
-        (pasteUrl ? `\n\nTranscript: ${pasteUrl}` : '') +
-        '\n\nA full transcript is attached.'
-      await opener
-        .send({ content, files: [dmFile] })
-        .catch((err) => {
-          log.info('Opener DM failed (likely DMs closed)', {
-            ticketId: ticket.id,
-            err: String(err),
-          })
-        })
+        (transcriptUrl ? `\n\nTranscript: ${transcriptUrl}` : '')
+      const logDmFailure = (err: unknown) =>
+        log.info('Opener DM failed (likely DMs closed)', { ticketId: ticket.id, err: String(err) })
+      await opener.send({ content: body + '\n\nA full transcript is attached.', files: [dmFile] }).catch(async (err) => {
+        // A long transcript can exceed Discord's upload limit: retry once
+        // without the attachment (the Transcript link, if any, still carries
+        // it). Any other error (e.g. 50007 DMs closed) is not retried.
+        if (!isPayloadTooLarge(err)) return logDmFailure(err)
+        log.info('Opener DM attachment too large; retrying without it', { ticketId: ticket.id, bytes: buf.length })
+        await opener.send({ content: body }).catch(logDmFailure)
+      })
     }
 
     void logTicketEvent({
@@ -727,40 +754,49 @@ export async function closeTicket(opts: {
   return { ok: true }
 }
 
-// Posts the plain-text transcript to copium.pics and records the link in
-// tickets.external_transcript_url — only when that column is still null, so a
-// TicketTool import's transcript URL is never overwritten. When
-// COPIUM_ALBUM_ID is set it also adds the paste to that album, fire-and-forget
+// Discord rejects an oversized upload with HTTP 413 / code 40005
+// ("Request entity too large").
+function isPayloadTooLarge(err: unknown): boolean {
+  const e = err as { status?: unknown; code?: unknown; message?: unknown } | null
+  return e?.status === 413 || e?.code === 40005 || /request entity too large/i.test(String(e?.message ?? ''))
+}
+
+// Publishes the transcript to copium.pics: the Discord-style HTML upload
+// first, falling back to the plain-text paste when the upload fails, is over
+// copium's size limit or the HTML could not be rendered. The winner's link is
+// recorded in tickets.external_transcript_url — only when that column is still
+// null, so a TicketTool import's transcript URL is never overwritten. When
+// COPIUM_ALBUM_ID is set its id is also added to that album, fire-and-forget
 // (never awaited; addToAlbum never throws and is .catch-wrapped anyway, so
-// there is no unhandled rejection). Never throws; an album failure only logs.
-async function postTranscriptPaste(
+// there is no unhandled rejection). Never throws.
+async function publishTranscript(
   ticketId: number,
-  input: Parameters<typeof renderTranscriptText>[0],
+  input: { discordHtml: string | null; filename: string; text: Parameters<typeof renderTranscriptText>[0] },
   closedAt: Date,
 ): Promise<string | null> {
   if (!isCopiumEnabled()) return null
   try {
-    const paste = await createPaste({
-      title: `Ticket #${ticketId} — ${input.channelName} (${input.guildName})`,
-      content: renderTranscriptText({ ...input, closedAt }),
-    })
-    if (!paste) return null
-    const { url, id } = paste
+    const title = `Ticket #${ticketId} — ${input.text.channelName} (${input.text.guildName})`
+    const published =
+      (input.discordHtml ? await uploadHtml({ filename: input.filename, html: input.discordHtml, title }) : null) ??
+      (await createPaste({ title, content: renderTranscriptText({ ...input.text, closedAt }) }))
+    if (!published) return null
+    const { url, id } = published
     const albumId = env.COPIUM_ALBUM_ID
-    if (albumId && !id) log.warn('Transcript paste had no id; skipping album add', { ticketId })
+    if (albumId && !id) log.warn('Transcript upload had no id; skipping album add', { ticketId })
     if (albumId && id) {
       void addToAlbum(albumId, [id]).catch((err) =>
-        log.warn('Adding transcript paste to album failed', { ticketId, err: String(err) }),
+        log.warn('Adding transcript to album failed', { ticketId, err: String(err) }),
       )
     }
     await db
       .update(tickets)
       .set({ externalTranscriptUrl: url })
       .where(and(eq(tickets.id, ticketId), isNull(tickets.externalTranscriptUrl)))
-      .catch((err) => log.warn('Saving transcript paste URL failed', { ticketId, err: String(err) }))
+      .catch((err) => log.warn('Saving transcript URL failed', { ticketId, err: String(err) }))
     return url
   } catch (err) {
-    log.warn('Transcript paste failed', { ticketId, err: String(err) })
+    log.warn('Transcript publish failed', { ticketId, err: String(err) })
     return null
   }
 }

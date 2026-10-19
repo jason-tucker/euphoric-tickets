@@ -1,5 +1,9 @@
-import type { TextChannel } from 'discord.js'
-import { Collection, type Message } from 'discord.js'
+import type { GuildMember, TextChannel, User } from 'discord.js'
+import { Collection, UserFlags, type Message } from 'discord.js'
+import { ExportReturnType, generateFromMessages } from 'discord-html-transcripts'
+import { buildProfiles as libraryBuildProfiles } from 'discord-html-transcripts/dist/utils/buildProfiles'
+import { log } from './logger'
+import { sanitizeTranscriptHtml, type SanitizedTranscript, type TranscriptProfile } from './transcriptSanitizer'
 
 function escapeHtml(s: string): string {
   return s
@@ -25,6 +29,99 @@ export async function fetchAllMessages(channel: TextChannel, hardCap = 2000): Pr
   return all.sort((a, b) => Number(a.createdTimestamp) - Number(b.createdTimestamp))
 }
 
+// Discord-style HTML transcript (v0.10.0) via discord-html-transcripts: the
+// same <discord-messages> markup copium.pics renders like the real channel
+// (transcripts.copium.tools). Images are NOT inlined (saveImages: false) —
+// they stay Discord CDN URLs and copium rehosts them. The header shows guild +
+// channel; the footer names the ticket. Without hydration the page loads
+// @derockdev/discord-components-core from cdn.jsdelivr.net to render the
+// custom elements in a browser.
+//
+// The library's HTML is UNTRUSTED: it writes participant names into an inline
+// script with a raw JSON.stringify (a name can close the script). Everything
+// returned here has been through sanitizeTranscriptHtml
+// (src/services/transcriptSanitizer.ts), the trust boundary: parse5-parsed,
+// rebuilt from an allowlist with exactly one, known <script src>, re-parsed and
+// verified — or this throws and the close flow attaches the legacy, escaped
+// renderTranscriptHtml instead.
+//
+// `upload` goes to copium (which strips inline scripts and swaps the script
+// src for its vendored copy, so author/avatar/bot/verified/role-color are
+// explicit attributes instead of the library's profiles map); `attachment` is
+// the opener's DM file: the same markup plus a CSP <meta> and the components
+// script pinned to an exact version.
+export async function renderDiscordTranscriptHtml(opts: {
+  channel: TextChannel
+  messages: Message[]
+  ticketId: number
+  filename: string
+}): Promise<SanitizedTranscript> {
+  const { channel, messages, ticketId, filename } = opts
+  const html = await generateFromMessages(messages, channel, {
+    returnType: ExportReturnType.String,
+    saveImages: false,
+    poweredBy: false,
+    filename,
+    footerText: `Ticket #${ticketId} · ${channel.guild.name} · #${channel.name} · {number} message{s}`,
+  })
+  return sanitizeTranscriptHtml(await stripLibraryProfilesScript(html, messages), {
+    profiles: buildProfiles(messages),
+    replyAvatars: buildReplyAvatars(messages),
+    requiredIds: messages.filter((m) => !m.system).map((m) => `m-${m.id}`),
+  })
+}
+
+// Defence in depth before the parser: cut the library's profiles script out
+// of the raw string by its exact bytes, recomputed with the library's own
+// buildProfiles, so a name that closes the script never reaches the DOM at all
+// (not even as inert markup). It is the first `<script>window.$discordMessage=`
+// in the document (only the static <head> precedes it, and message content is
+// escaped). If it is not found verbatim (e.g. a library upgrade changed it),
+// the HTML is left as is and the sanitizer alone removes every script.
+async function stripLibraryProfilesScript(html: string, messages: Message[]): Promise<string> {
+  const exact = `<script>window.$discordMessage={profiles:${JSON.stringify(await libraryBuildProfiles(messages))}}</script>`
+  const at = html.indexOf(exact)
+  if (at === -1) {
+    log.warn('Transcript profiles script not found verbatim; relying on the sanitizer alone')
+    return html
+  }
+  return html.slice(0, at) + html.slice(at + exact.length)
+}
+
+// Same fields and fallbacks as discord-html-transcripts' own buildProfiles
+// (nickname → display name → username; member avatar → user avatar), built
+// from the messages rather than parsed back out of its inline script.
+export function buildProfiles(messages: Message[]): Map<string, TranscriptProfile> {
+  const profiles = new Map<string, TranscriptProfile>()
+  const add = (member: GuildMember | null | undefined, user: User) => {
+    if (profiles.has(user.id)) return
+    profiles.set(user.id, {
+      author: member?.nickname ?? user.displayName ?? user.username,
+      avatar: member?.displayAvatarURL({ size: 64 }) ?? user.displayAvatarURL({ size: 64 }),
+      bot: user.bot,
+      verified: Boolean(user.flags?.has(UserFlags.VerifiedBot)),
+      roleColor: member?.displayHexColor,
+    })
+  }
+  for (const m of messages) {
+    add(m.member, m.author)
+    if (m.interaction) add(null, m.interaction.user)
+    const last = m.thread?.lastMessage
+    if (last) add(last.member, last.author)
+  }
+  return profiles
+}
+
+// Message id → its author's avatar, for <discord-reply> elements the library
+// leaves without one (it only uses a custom user avatar, never the default).
+export function buildReplyAvatars(messages: Message[]): Map<string, string> {
+  return new Map(
+    messages.map((m) => [m.id, m.member?.displayAvatarURL({ size: 32 }) ?? m.author.displayAvatarURL({ size: 32 })]),
+  )
+}
+
+// Legacy hand-rolled HTML. Only used as the DM attachment when the
+// Discord-style renderer throws, so the opener still gets a transcript.
 export function renderTranscriptHtml(opts: {
   guildName: string
   channelName: string

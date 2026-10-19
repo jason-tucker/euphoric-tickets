@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Collection } from 'discord.js'
-import { addToAlbum, createPaste } from '../src/services/copiumService'
-import { renderTranscriptText } from '../src/services/transcriptService'
+import { addToAlbum, COPIUM_HTML_MAX_BYTES, createPaste, uploadHtml } from '../src/services/copiumService'
+import { renderDiscordTranscriptHtml, renderTranscriptText } from '../src/services/transcriptService'
+import { sanitizeTranscriptHtml } from '../src/services/transcriptSanitizer'
+import { sampleConversation } from './fixtures/sampleConversation'
 import { env } from '../src/config/env'
 
 afterEach(() => {
@@ -52,6 +54,7 @@ describe('copiumService.createPaste', () => {
     // The test env leaves COPIUM_TOKEN unset, so the default is disabled too.
     expect(env.COPIUM_TOKEN).toBeUndefined()
     expect(env.COPIUM_API_BASE).toBe('https://copium.pics')
+    expect(env.COPIUM_UPLOAD_BASE).toBe('https://v.copium.pics')
     const spy = vi.spyOn(globalThis, 'fetch')
     expect(await createPaste({ title: 't', content: 'c' })).toBeNull()
     expect(spy).not.toHaveBeenCalled()
@@ -93,6 +96,169 @@ describe('copiumService.createPaste', () => {
     for (const fetch of cases) {
       expect(await createPaste({ title: 't', content: 'c' }, { fetch, token: TOKEN })).toBeNull()
     }
+  })
+})
+
+describe('copiumService.uploadHtml', () => {
+  const HTML = '<!DOCTYPE html><html><body><discord-messages>PRIVATE-HTML</discord-messages></body></html>'
+  const ok = (body: Record<string, unknown>) => vi.fn(async () => jsonResponse(201, body))
+
+  it('POSTs multipart file + title to <uploadBase>/api/upload?wait=1 and returns the link', async () => {
+    const fetch = ok({
+      key: 'TDTwf8Cu.html',
+      kind: 'html',
+      id: 'TDTwf8Cu',
+      url: 'https://transcripts.copium.tools/TDTwf8Cu.url.html',
+      messages: 2,
+      pageUrl: 'https://tucker.copium.pics/i/TDTwf8Cu',
+      link: 'https://transcripts.copium.tools/TDTwf8Cu.html',
+    })
+    const res = await uploadHtml(
+      { filename: 'ticket-7-sample.html', html: HTML, title: 'Ticket #7 — sample (Server)' },
+      // COPIUM_LINK_HOST must NOT be applied to HTML transcript links.
+      { fetch, token: TOKEN, uploadBase: 'https://v.copium.pics/', linkHost: 'i.tucker.host' },
+    )
+    expect(res).toEqual({ id: 'TDTwf8Cu', url: 'https://transcripts.copium.tools/TDTwf8Cu.html' })
+    const [endpoint, init] = fetch.mock.calls[0] as unknown as [string, RequestInit]
+    expect(endpoint).toBe('https://v.copium.pics/api/upload?wait=1')
+    expect(init.method).toBe('POST')
+    // No manual Content-Type: fetch sets multipart/form-data with the boundary.
+    expect(init.headers).toEqual({ Authorization: `Bearer ${TOKEN}`, 'X-Requested-With': 'fetch' })
+    expect(init.signal).toBeInstanceOf(AbortSignal)
+    const form = init.body as FormData
+    expect(form).toBeInstanceOf(FormData)
+    const file = form.get('file') as File
+    expect(file.name).toBe('ticket-7-sample.html')
+    expect(file.type).toBe('text/html')
+    expect(await file.text()).toBe(HTML)
+    expect(form.get('title')).toBe('Ticket #7 — sample (Server)')
+    // The serialised multipart body carries the same filename + content type.
+    const raw = await new Response(form).text()
+    expect(raw).toContain('name="file"; filename="ticket-7-sample.html"')
+    expect(raw).toContain('Content-Type: text/html')
+  })
+
+  it('falls back to `url` when `link` is missing or invalid; appends .html to the filename', async () => {
+    const fetch = ok({ kind: 'html', id: 'a', url: 'https://transcripts.copium.tools/a.html', link: 'javascript:alert(1)' })
+    expect(await uploadHtml({ filename: 'ticket-1', html: HTML, title: 't' }, { fetch, token: TOKEN })).toEqual({
+      id: 'a',
+      url: 'https://transcripts.copium.tools/a.html',
+    })
+    const form = (fetch.mock.calls[0] as unknown as [string, RequestInit])[1].body as FormData
+    expect((form.get('file') as File).name).toBe('ticket-1.html')
+  })
+
+  it('accepts a non-html kind with a warning', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const fetch = ok({ kind: 'file', id: 'b', link: 'https://transcripts.copium.tools/b.html' })
+    expect(await uploadHtml({ filename: 'x.html', html: HTML, title: 't' }, { fetch, token: TOKEN })).toEqual({
+      id: 'b',
+      url: 'https://transcripts.copium.tools/b.html',
+    })
+    expect(warn.mock.calls.map((c) => c.join(' ')).join('\n')).toContain('unexpected kind')
+  })
+
+  it('no token → no request; oversize HTML → no request', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const fetch = vi.fn()
+    expect(await uploadHtml({ filename: 'x.html', html: HTML, title: 't' }, { fetch, token: undefined })).toBeNull()
+    const huge = 'a'.repeat(COPIUM_HTML_MAX_BYTES + 1)
+    expect(await uploadHtml({ filename: 'x.html', html: huge, title: 't' }, { fetch, token: TOKEN })).toBeNull()
+    expect(fetch).not.toHaveBeenCalled()
+  })
+
+  it('401 / 500 / timeout / thrown / bad JSON / no link → null; never logs the token or the HTML', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const cases: (typeof globalThis.fetch)[] = [
+      vi.fn(async () => jsonResponse(401, { error: 'Upload token is invalid or was revoked' })),
+      vi.fn(async () => jsonResponse(500, { error: 'boom' })),
+      vi.fn(
+        (_url: string, init?: RequestInit) =>
+          new Promise<Response>((_resolve, reject) => {
+            init?.signal?.addEventListener('abort', () => reject(init.signal!.reason))
+          }),
+      ) as unknown as typeof globalThis.fetch,
+      vi.fn(async () => {
+        throw new TypeError('fetch failed')
+      }),
+      vi.fn(async () => new Response('<html>oops</html>', { status: 201 })),
+      vi.fn(async () => jsonResponse(201, { kind: 'html', id: 'c' })),
+    ]
+    for (const fetch of cases) {
+      expect(await uploadHtml({ filename: 'x.html', html: HTML, title: 't' }, { fetch, token: TOKEN, timeoutMs: 20 })).toBeNull()
+    }
+    const logged = warn.mock.calls.map((c) => c.join(' ')).join('\n')
+    expect(logged).toContain('401')
+    expect(logged).toContain('500')
+    expect(logged).toContain('timeout')
+    expect(logged).not.toContain(TOKEN)
+    expect(logged).not.toContain('PRIVATE-HTML')
+  })
+})
+
+describe('renderDiscordTranscriptHtml', () => {
+  it('renders <discord-messages> with one <discord-message> per message, header + footer naming guild/channel/ticket', async () => {
+    const { client, channel, messages } = sampleConversation()
+    try {
+      const out = await renderDiscordTranscriptHtml({ channel, messages, ticketId: 7, filename: 'ticket-7-sample-user.html' })
+      // Both variants (copium upload, DM attachment) carry the same markup.
+      for (const html of [out.upload, out.attachment]) {
+        expect(html).toContain('<discord-messages')
+        expect(html.match(/<discord-message[\s>]/g)).toHaveLength(messages.length)
+        expect(html).toContain('<discord-header guild="Sample Server" channel="ticket-7-sample-user"')
+        expect(html).toContain('Ticket #7 · Sample Server · #ticket-7-sample-user · 4 messages')
+        expect(html).toContain('<discord-reply')
+        expect(html).toContain('<discord-embed')
+        expect(html).toContain('<discord-mention type="user">Helper</discord-mention>')
+        expect(html).toContain('url="https://cdn.discordapp.com/attachments/') // saveImages: false
+        expect(html).not.toContain('data:image')
+        expect(html).not.toMatch(/Powered by/i)
+
+        // copium strips inline scripts: author/avatar must be explicit attributes.
+        expect(html).not.toContain('profile=')
+        expect(html).not.toContain('$discordMessage')
+        expect(html).not.toContain('</style>;')
+        expect(html).not.toContain('role-color="#000000"')
+        const tags = html.match(/<discord-message [^>]*>/g) ?? []
+        expect(tags).toHaveLength(4)
+        for (const tag of tags) {
+          expect(tag).toMatch(/ author="[^"]+"/)
+          expect(tag).toMatch(/ avatar="https:\/\/[^"]+"/)
+        }
+        expect(tags[0]).toContain('author="EuphoricTickets"')
+        expect(tags[0]).toMatch(/ bot(="")?[ >]/)
+        expect(tags[1]).toContain('author="Sample User"')
+        expect(tags[1]).not.toMatch(/ bot[= >]/)
+        expect(tags[2]).toContain('author="Helper"')
+        // The components script still loads (copium swaps it for its vendored copy).
+        expect(html).toContain('<script type="module" src="https://cdn.jsdelivr.net/npm/@derockdev/discord-components-core@')
+      }
+    } finally {
+      await client.destroy()
+    }
+  })
+})
+
+describe('sanitizeTranscriptHtml profile rewrite', () => {
+  it('escapes attribute values, adds verified/role-color only when meaningful, drops unknown profiles', () => {
+    const profiles = new Map([
+      ['1', { author: 'A "quoted" <b>&', avatar: 'https://cdn.example/a.png?x=1&y=2', bot: true, verified: true, roleColor: '#ff0000' }],
+      ['2', { author: 'plain', avatar: 'https://cdn.example/b.png', bot: false, verified: false, roleColor: '#000000' }],
+    ])
+    const { upload } = sanitizeTranscriptHtml(
+      '<!DOCTYPE html><html><head></head><body>' +
+        '<style>x</style>;<discord-message id="m-1" profile="1">a</discord-message><discord-message id="m-2" profile="2">b</discord-message>' +
+        '<discord-message id="m-3" profile="3">c</discord-message><discord-reply slot="reply" author="r" role-color="#000000"></discord-reply>' +
+        '</body></html>',
+      { profiles },
+    )
+    const body = upload.slice(upload.indexOf('<body>') + '<body>'.length, upload.indexOf('</body>'))
+    expect(body).toBe(
+      '<style>x</style>' +
+        '<discord-message id="m-1" author="A &quot;quoted&quot; &lt;b&gt;&amp;" avatar="https://cdn.example/a.png?x=1&amp;y=2" bot="" verified="" role-color="#ff0000">a</discord-message>' +
+        '<discord-message id="m-2" author="plain" avatar="https://cdn.example/b.png">b</discord-message>' +
+        '<discord-message id="m-3">c</discord-message><discord-reply slot="reply" author="r"></discord-reply>',
+    )
   })
 })
 

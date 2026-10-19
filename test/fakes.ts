@@ -87,6 +87,16 @@ export class FakeTextChannel {
   isTextBased(): boolean {
     return true
   }
+  // Read by the Discord-style transcript renderer (discord-html-transcripts).
+  isDMBased(): boolean {
+    return false
+  }
+  isThread(): boolean {
+    return false
+  }
+  isVoiceBased(): boolean {
+    return false
+  }
   async send(payload: Sent | string): Promise<{ id: string }> {
     if (typeof payload !== 'string') assertDiscordLimits(payload)
     this.sent.push(typeof payload === 'string' ? { content: payload } : payload)
@@ -146,7 +156,14 @@ export class FakeMember {
   get permissions() {
     return { has: () => this.manageGuild }
   }
-  async send(payload: { content?: string }): Promise<unknown> {
+  // Every DM attempt (including rejected ones), and an optional hook that
+  // returns an error to reject a given payload with.
+  dmAttempts: { content?: string; files?: unknown[] }[] = []
+  dmError: ((payload: { content?: string; files?: unknown[] }) => unknown) | null = null
+  async send(payload: { content?: string; files?: unknown[] }): Promise<unknown> {
+    this.dmAttempts.push(payload)
+    const err = this.dmError?.(payload)
+    if (err) throw err
     this.sentDMs.push(payload)
     return {}
   }
@@ -157,6 +174,9 @@ export class FakeGuild {
   memberMap = new Map<string, FakeMember>()
   available = true
   name = 'Test Guild'
+  iconURL(): string | null {
+    return null
+  }
   roles: { everyone: { id: string } }
   me: FakeMember
   constructor(public id: string = snow()) {
