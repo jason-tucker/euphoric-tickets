@@ -1,15 +1,13 @@
 import {
-  ChannelType,
   ChatInputCommandInteraction,
   PermissionFlagsBits,
   SlashCommandBuilder,
-  type TextChannel,
 } from 'discord.js'
 import { canManageGuildSettings } from '../services/permissions'
 import { getPanelCategories } from '../services/settingsService'
 import { getBusinessByGuildId, getBusinessesByGuildId } from '../services/businessResolver'
 import { buildPanelEditPayload } from '../services/ticketRenderer'
-import { postTeamPanel } from '../services/panelService'
+import { isPanelChannelType, postTeamPanel, type PanelChannel } from '../services/panelService'
 import { db } from '../db/client'
 import { ticketPanels } from '../db/schema/ticketPanels'
 import { businesses, type Business } from '../db/schema/businesses'
@@ -71,11 +69,11 @@ export async function execute(interaction: ChatInputCommandInteraction): Promise
 }
 
 async function postPanel(interaction: ChatInputCommandInteraction): Promise<void> {
-  if (!interaction.channel || interaction.channel.type !== ChannelType.GuildText) {
-    await interaction.reply({ content: 'Run this in a regular text channel.', ephemeral: true })
+  if (!interaction.channel || !isPanelChannelType(interaction.channel.type)) {
+    await interaction.reply({ content: 'Run this in a text or announcement channel.', ephemeral: true })
     return
   }
-  const channel = interaction.channel as TextChannel
+  const channel = interaction.channel as PanelChannel
 
   const botMember = await interaction.guild!.members.fetchMe()
   if (!channel.permissionsFor(botMember)?.has(PermissionFlagsBits.SendMessages)) {
@@ -159,12 +157,12 @@ async function refreshPanel(interaction: ChatInputCommandInteraction): Promise<v
   }
 
   const channel = await interaction.guild!.channels.fetch(panelRow.channelId).catch(() => null)
-  if (!channel || channel.type !== ChannelType.GuildText) {
-    await interaction.editReply(`Panel channel <#${panelRow.channelId}> not found or not text.`)
+  if (!channel || !isPanelChannelType(channel.type)) {
+    await interaction.editReply(`Panel channel <#${panelRow.channelId}> not found or not a text/announcement channel.`)
     return
   }
 
-  const message = await (channel as TextChannel).messages.fetch(panelRow.messageId).catch(() => null)
+  const message = await (channel as PanelChannel).messages.fetch(panelRow.messageId).catch(() => null)
   if (!message) {
     await interaction.editReply(`Panel message \`${panelRow.messageId}\` is gone — post a new one with \`/panel post\`.`)
     return

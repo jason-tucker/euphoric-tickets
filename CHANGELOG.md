@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.10.2] — 2026-10-19 — Panels in announcement channels
+
+No schema change; no web deploy required; no slash-command change.
+
+### Fixed
+- **Panels work in announcement channels.** `POST /api/internal/panel/post` refused `#contact` (type 5, `GuildAnnouncement`) with `404 channel_not_found`. Panel channel checks now accept `GuildText` **and** `GuildAnnouncement` — the route (new post + adopt, via the new panel-only `lookupPanelChannel` in `src/services/panelService.ts`), `/panel post` and `/panel refresh` (`isPanelChannelType`; channels typed `TextChannel | NewsChannel`). Ticket channels and the Integration routes' `lookupTextChannel` are unchanged (GuildText only).
+- **Another guild's channel → `404 channel_not_found`** on the panel route (discord.js `GuildChannelUnowned` is now treated as gone, like `10003`), instead of `503 guild_unavailable`. Panel route only.
+
+### Tests
+- 190 tests (was 186). An announcement channel is accepted for a route new post and adopt, `/panel post` (adopt + new) and `/panel refresh`; voice / forum / category / stage channels are still `404`; another guild's channel is `404`; `/panel post` in a voice channel is refused. Fakes: `channels.create({ type })`, `addChannelOfType`, and a cross-guild fetch throws `GuildChannelUnowned`.
+
 ## [0.10.1] — 2026-10-19 — Team-named panels, adopting existing messages, internal panel route
 
 No schema change; no web deploy required. Slash-command change (`/panel post message_id:`) — picked up by the deploy workflow's `node dist/bot/registerCommands.js` step (guild-scoped to `GUILD_ID`).
