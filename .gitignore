@@ -8,4 +8,5 @@ logs
 .DS_Store
 *.tsbuildinfo
 
-.claude/
+.claude/*
+!.claude/skills/
