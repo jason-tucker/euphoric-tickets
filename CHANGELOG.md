@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.3] — 2026-10-22 — Project-manager skill
+
+No schema change; no web deploy required; no slash-command change.
+
+### Added
+- **Added `/project-manager` Claude Code skill** (`.claude/skills/project-manager/SKILL.md`). Delegates all requested work to agents with written prompts: Opus for planning, Sonnet for coding, Haiku for lookups and low-level tasks. Tooling only; no runtime change.
+
 ## [0.10.2] — 2026-10-19 — Panels in announcement channels
 
 No schema change; no web deploy required; no slash-command change.
